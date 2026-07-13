@@ -1,0 +1,82 @@
+amcl:
+  ros__parameters:
+    # Nav2 AMCL parameter reference:
+    # https://docs.nav2.org/configuration/packages/configuring-amcl.html
+
+    # Runtime / topic configuration
+    # use_sim_time은 launch에서 override 가능하다. 실기에서는 /clock이 없으면 false여야 한다.
+    # scan_topic은 amcl_guard가 필터링한 LaserScan topic을 사용한다.
+    use_sim_time: false
+    scan_topic: "/scan_amcl"
+
+    # Frame / TF configuration
+    # AMCL은 map -> odom TF를 publish하고, odom -> base_link는 외부 odometry를 사용한다.
+    # transform_tolerance는 AMCL이 publish하는 map -> odom TF를 미래 시점까지 유효하게 두는 시간이다.
+    global_frame_id: "map"
+    odom_frame_id: "odom"
+    base_frame_id: "base_link"
+    tf_broadcast: true
+    transform_tolerance: 1.0
+
+    # Initial pose
+    # set_initial_pose가 true면 /initialpose를 기다리지 않고 아래 초기 위치에서 시작한다.
+    set_initial_pose: true
+    initial_pose:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      yaw: 0.0
+
+    # Particle filter
+    # particles는 로봇 위치 후보군이다. 많을수록 무겁지만 복잡한 상황에서 안정적이다.
+    # pf_err / pf_z는 KLD sampling 기반 particle 수 조절의 오차/신뢰도 계열 파라미터다.
+    min_particles: 1000
+    max_particles: 4000
+    pf_err: 0.05
+    pf_z: 0.99
+    resample_interval: 1
+    save_pose_rate: 0.5
+
+    # Motion model / odometry noise
+    # diff drive 로봇 기준 motion model을 사용한다.
+    # alpha 값은 odom 이동/회전에 포함될 것으로 예상하는 noise 크기다.
+    robot_model_type: "nav2_amcl::DifferentialMotionModel"
+    alpha1: 0.2
+    alpha2: 0.2
+    alpha3: 0.2
+    alpha4: 0.2
+    alpha5: 0.2
+
+    # Filter update trigger
+    # 로봇이 아래 거리/각도 이상 움직였을 때 particle filter를 laser scan으로 갱신한다.
+    # 너무 작으면 미세 odom noise에도 자주 update되고, 너무 크면 pose 갱신이 늦어진다.
+    update_min_d: 0.02
+    update_min_a: 0.02
+
+    # Laser model
+    # likelihood_field는 scan point가 map의 장애물 근처에 있는지를 확률로 평가한다.
+    # max_beams는 각 scan에서 AMCL update에 사용할 beam 개수다.
+    laser_model_type: "likelihood_field"
+    laser_min_range: 0.05
+    laser_max_range: 50.0
+    max_beams: 60
+    laser_likelihood_max_dist: 2.0
+    sigma_hit: 0.2
+    lambda_short: 0.1
+    z_hit: 0.5
+    z_short: 0.05
+    z_max: 0.05
+    z_rand: 0.5
+
+    # Beam skipping
+    # 일부 beam이 map과 많이 안 맞을 때 해당 beam을 무시하는 기능이다.
+    # 현재는 amcl_guard가 scan 품질을 먼저 판단하므로 AMCL 내부 beamskip은 끈다.
+    do_beamskip: false
+    beam_skip_distance: 0.5
+    beam_skip_threshold: 0.3
+    beam_skip_error_threshold: 0.9
+
+    # Recovery behavior
+    # 값이 0이면 AMCL이 random pose injection 기반 recovery를 사실상 사용하지 않는다.
+    recovery_alpha_fast: 0.0
+    recovery_alpha_slow: 0.0

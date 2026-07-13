@@ -1,0 +1,29 @@
+amcl_guard:
+  ros__parameters:
+    log_level: "info"
+    enabled: true
+    input_scan_topic: "/scan_laserscan"
+    output_scan_topic: "/scan_amcl"
+    amcl_pose_topic: "/amcl_pose"
+    odom_frame_id: "odom"
+    base_frame_id: "base_link"
+    require_good_pose: true
+    max_pose_age: 3.0
+    allow_stale_pose_when_stationary: true
+    stale_pose_max_age: 30.0
+    stale_pose_max_odom_translation: 0.05
+    stale_pose_max_odom_rotation: 0.05
+    tf_lookup_timeout: 0.05
+    max_xy_covariance: 0.5
+    max_yaw_covariance: 0.4
+    min_valid_beam_ratio: 0.2
+    max_near_beam_ratio: 0.8
+    near_range: 0.35
+    valid_min_range: -1.0
+    valid_max_range: -1.0
+    max_hold_duration: 3.0
+    drop_scans_after_timeout: true
+    log_throttle_sec: 1.0
+    publish_status_topics: false
+    log_status_changes: true
+    log_blocked_scan_warnings: true
