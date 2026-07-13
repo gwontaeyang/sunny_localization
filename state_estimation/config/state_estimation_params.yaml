@@ -1,0 +1,12 @@
+state_estimation_node:
+  ros__parameters:
+    map_frame_id: "map"
+    odom_frame_id: "odom"
+    base_link_frame_id: "base_link"
+    pose_command_topic: "~/set_pose"
+    landmark_correction_enable_topic: "task_manager_node/using_vmarker_localization"
+    landmark_observation_topic: "~/landmark_observation"
+    log_level: "info" # Options: trace, debug, info, warn, err, critical, off
+    
+    # Robot pose publishing timeout (in milliseconds)
+    robot_pose_timeout: 100.0  # Default: 100ms timeout for pose publishing check

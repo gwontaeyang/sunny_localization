@@ -1,0 +1,1894 @@
+#
+# Bunkspeed OBJ Material File
+# http://www.bunkspeed.com
+#
+
+newmtl color
+Kd 0.4666667 0.6666667 0.8666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color
+Kd 0.4666667 0.6666667 0.8666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-4
+Kd 0.5294118 0.8666667 1
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-4
+Kd 0.5294118 0.8666667 1
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-6
+Kd 0.4666667 0.4666667 0.4666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-7
+Kd 0 0.6666667 0.6666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-8
+Kd 0 0.4666667 1
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-8
+Kd 0 0.4666667 1
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-8
+Kd 0 0.4666667 1
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-8
+Kd 0 0.4666667 1
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-5
+Kd 0.6 0.6 0.6
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-9
+Kd 0.8666667 0.8666667 0.8666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-4
+Kd 0.5294118 0.8666667 1
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-10
+Kd 0.5294118 0.5294118 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-11
+Kd 0.8 0.8 0.8
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-10
+Kd 0.5294118 0.5294118 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-11
+Kd 0.8 0.8 0.8
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-10
+Kd 0.5294118 0.5294118 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-11
+Kd 0.8 0.8 0.8
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-10
+Kd 0.5294118 0.5294118 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-11
+Kd 0.8 0.8 0.8
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-10
+Kd 0.5294118 0.5294118 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-11
+Kd 0.8 0.8 0.8
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-10
+Kd 0.5294118 0.5294118 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-11
+Kd 0.8 0.8 0.8
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-10
+Kd 0.5294118 0.5294118 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-11
+Kd 0.8 0.8 0.8
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-10
+Kd 0.5294118 0.5294118 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-11
+Kd 0.8 0.8 0.8
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-2
+Kd 1 0.7294118 0.2666667
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-3
+Kd 0.6666667 0.6666667 0
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
+
+newmtl color-4
+Kd 0.5294118 0.8666667 1
+Ks 1 1 1
+pr 0.15
+pm 0
+d 1
+illum 2
+Ns 5.212766
