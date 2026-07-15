@@ -26,11 +26,13 @@ def generate_launch_description():
         default_value="false",
         description="Use simulation clock when true.",
     )
-    robot_config_arg = DeclareLaunchArgument(
-        "robot_config",
-        default_value="",
-        description="Robot model config YAML. Reserved for model-specific localization options.",
+    robot_model_arg = DeclareLaunchArgument(
+        "robot_model",
+        default_value="rover",
+        description="Robot model name.",
     )
+    type_arg = DeclareLaunchArgument("type", default_value="apart")
+    mode_arg = DeclareLaunchArgument("mode", default_value="NAV")
     launch_state_estimation_arg = DeclareLaunchArgument(
         "launch_state_estimation",
         default_value="true",
@@ -47,7 +49,9 @@ def generate_launch_description():
     return LaunchDescription(
         [
             use_sim_time_arg,
-            robot_config_arg,
+            robot_model_arg,
+            type_arg,
+            mode_arg,
             launch_state_estimation_arg,
             launch_amcl_arg,
             create_package_launch(
