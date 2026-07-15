@@ -6,6 +6,7 @@ from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
 
 
 def create_package_launch(package_name, launch_file, launch_args=None, condition=None):
@@ -21,6 +22,9 @@ def create_package_launch(package_name, launch_file, launch_args=None, condition
 
 
 def generate_launch_description():
+    pkg_dir = get_package_share_directory("localization_bringup")
+    config_file = os.path.join(pkg_dir, "config", "localization_bringup.yaml")
+
     use_sim_time_arg = DeclareLaunchArgument(
         "use_sim_time",
         default_value="false",
@@ -45,6 +49,19 @@ def generate_launch_description():
     )
 
     use_sim_time = LaunchConfiguration("use_sim_time")
+    localization_bringup_node = Node(
+        package="localization_bringup",
+        executable="localization_bringup_node",
+        name="localization_bringup_node",
+        parameters=[
+            config_file,
+            {
+                "config_file_path": config_file,
+                "use_sim_time": use_sim_time,
+            },
+        ],
+        output="screen",
+    )
 
     return LaunchDescription(
         [
@@ -54,6 +71,7 @@ def generate_launch_description():
             mode_arg,
             launch_state_estimation_arg,
             launch_amcl_arg,
+            localization_bringup_node,
             create_package_launch(
                 "state_estimation",
                 "state_estimation.launch.py",

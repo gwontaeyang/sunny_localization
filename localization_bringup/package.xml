@@ -12,6 +12,11 @@
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <depend>gole_utility</depend>
+  <depend>lifecycle_msgs</depend>
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>yaml-cpp</depend>
   <exec_depend>state_estimation</exec_depend>
   <exec_depend>amcl</exec_depend>
 

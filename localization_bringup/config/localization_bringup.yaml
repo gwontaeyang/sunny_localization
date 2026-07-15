@@ -1,0 +1,8 @@
+localization_bringup_node:
+  ros__parameters:
+    check_frequency: 2.0
+    max_check_count: 10
+
+    lifecycle_nodes:
+      state_estimation_node:
+        initial_state: active
