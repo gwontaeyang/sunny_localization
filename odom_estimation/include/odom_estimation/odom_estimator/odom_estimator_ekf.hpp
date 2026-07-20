@@ -1,5 +1,5 @@
-#ifndef LOCALIZATION_LOCALIZER_LOCALIZER_EKF_HPP_
-#define LOCALIZATION_LOCALIZER_LOCALIZER_EKF_HPP_
+#ifndef ODOM_ESTIMATION_ODOM_ESTIMATOR_ODOM_ESTIMATOR_EKF_HPP_
+#define ODOM_ESTIMATION_ODOM_ESTIMATOR_ODOM_ESTIMATOR_EKF_HPP_
 
 #include <memory>
 #include <string>
@@ -13,24 +13,24 @@
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
 
-#include "localization/localizer/localizer_base.hpp"
+#include "odom_estimation/odom_estimator/odom_estimator_base.hpp"
 
 namespace gole {
-namespace localization {
+namespace odom_estimation {
 
 /**
- * @brief Simple example localizer implementation for demonstration
+ * @brief Simple example odom_estimator implementation for demonstration
  * 
- * This is a basic implementation that shows how to extend LocalizerBase.
+ * This is a basic implementation that shows how to extend OdomEstimatorBase.
  * In a real scenario, this would contain actual localization algorithms.
  */
-class LocalizerEKF : public LocalizerBase {
+class OdomEstimatorEKF : public OdomEstimatorBase {
 public:
-    LocalizerEKF(rclcpp_lifecycle::LifecycleNode* node,
+    OdomEstimatorEKF(rclcpp_lifecycle::LifecycleNode* node,
                  std::shared_ptr<spdlog::logger> logger,
                  std::shared_ptr<diagnostic::DiagnosticManager> diagnostic_manager,
                  const Params& params);
-    ~LocalizerEKF() override = default;
+    ~OdomEstimatorEKF() override = default;
 
     // bool start() override;
     // bool stop() override;
@@ -97,7 +97,7 @@ private:
     static constexpr double CONVERGENCE_THRESHOLD = 0.40;  // Max change ratio for stability
 };
 
-} // namespace localization
+} // namespace odom_estimation
 } // namespace gole
 
-#endif // LOCALIZATION_LOCALIZER_LOCALIZER_EKF_HPP_
+#endif // ODOM_ESTIMATION_ODOM_ESTIMATOR_ODOM_ESTIMATOR_EKF_HPP_

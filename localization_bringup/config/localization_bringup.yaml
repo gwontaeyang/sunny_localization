@@ -4,5 +4,5 @@ localization_bringup_node:
     max_check_count: 10
 
     lifecycle_nodes:
-      state_estimation_node:
+      odom_estimation_node:
         initial_state: active

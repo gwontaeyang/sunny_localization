@@ -1,4 +1,4 @@
-state_estimation_node:
+odom_estimation_node:
   ros__parameters:
     map_frame_id: "map"
     odom_frame_id: "odom"

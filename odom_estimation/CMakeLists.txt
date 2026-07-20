@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(state_estimation)
+project(odom_estimation)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
@@ -72,7 +72,7 @@ install(TARGETS ${PROJECT_NAME}_node
 )
 
 # Install header files
-install(DIRECTORY include/
+install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION include/${PROJECT_NAME}
 )
 

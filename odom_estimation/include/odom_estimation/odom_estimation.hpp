@@ -1,5 +1,5 @@
-#ifndef LOCALIZATION_LOCALIZATION_HPP_
-#define LOCALIZATION_LOCALIZATION_HPP_
+#ifndef ODOM_ESTIMATION_ODOM_ESTIMATION_HPP_
+#define ODOM_ESTIMATION_ODOM_ESTIMATION_HPP_
 
 #include <memory>
 #include <string>
@@ -30,10 +30,10 @@
 #include "logger/logger.hpp"
 #include "diagnostic/diagnostic_manager.hpp"
 
-#include "localization/localizer/localizer_base.hpp"
+#include "odom_estimation/odom_estimator/odom_estimator_base.hpp"
 
 namespace gole {
-namespace localization {
+namespace odom_estimation {
 
 // Wrapper class for SimpleFilter to expose signalMessage as public
 template<typename M>
@@ -52,17 +52,17 @@ public:
  * This class provides a common interface for different localization algorithms.
  * All concrete localization implementations should inherit from this class.
  */
-class Localization : public rclcpp_lifecycle::LifecycleNode {
+class OdomEstimation : public rclcpp_lifecycle::LifecycleNode {
 public:
     /**
      * @brief Constructor
      */
-    Localization();
+    OdomEstimation();
 
     /**
      * @brief Virtual destructor
      */
-    virtual ~Localization() = default;
+    virtual ~OdomEstimation() = default;
 
 protected:
     // Lifecycle node callbacks
@@ -91,10 +91,10 @@ protected:
 
 private:
     // // Core configuration
-    std::unique_ptr<LocalizerBase> localizer_;
+    std::unique_ptr<OdomEstimatorBase> odom_estimator_;
     std::shared_ptr<diagnostic::DiagnosticManager> diagnostic_manager_;
     std::shared_ptr<spdlog::logger> logger_;
-    LocalizerType localizer_type_;
+    OdomEstimatorType odom_estimator_type_;
     
     // Parameters
     std::shared_ptr<Params> params_;
@@ -152,11 +152,11 @@ private:
     // Marker publishing
     void publishObjMarker(const nav_msgs::msg::Odometry& odom);
     
-    // Direct handler for localizer notifications
+    // Direct handler for odom_estimator notifications
     void handleNotification(const std::string& event_name, const std::any& data);
 };
 
-} // namespace localization
+} // namespace odom_estimation
 } // namespace gole
 
-#endif  // LOCALIZATION_LOCALIZATION_HPP_
+#endif  // ODOM_ESTIMATION_ODOM_ESTIMATION_HPP_

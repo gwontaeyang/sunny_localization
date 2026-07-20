@@ -1,5 +1,5 @@
-#ifndef LOCALIZATION_LOCALIZER_LOCALIZER_BASE_HPP_
-#define LOCALIZATION_LOCALIZER_LOCALIZER_BASE_HPP_
+#ifndef ODOM_ESTIMATION_ODOM_ESTIMATOR_ODOM_ESTIMATOR_BASE_HPP_
+#define ODOM_ESTIMATION_ODOM_ESTIMATOR_ODOM_ESTIMATOR_BASE_HPP_
 
 #include <any>
 #include <memory>
@@ -30,23 +30,23 @@
 #include "logger/logger.hpp"
 #include "diagnostic/diagnostic_manager.hpp"
 
-#include "localization/localizer/localizer_types.hpp"
+#include "odom_estimation/odom_estimator/odom_estimator_types.hpp"
 
 namespace gole {
-namespace localization {
+namespace odom_estimation {
 
 /**
- * @brief Abstract base class for all localizer implementations
+ * @brief Abstract base class for all odom_estimator implementations
  * 
  * This class provides a common interface for different localization algorithms.
- * All concrete localizer implementations should inherit from this class.
+ * All concrete odom_estimator implementations should inherit from this class.
  */
-class LocalizerBase {
+class OdomEstimatorBase {
 public:
     /**
      * @brief Constructor
      */
-    LocalizerBase(rclcpp_lifecycle::LifecycleNode* node,
+    OdomEstimatorBase(rclcpp_lifecycle::LifecycleNode* node,
                   std::shared_ptr<spdlog::logger> logger,
                   std::shared_ptr<diagnostic::DiagnosticManager> diagnostic_manager,
                   const Params& params);
@@ -54,11 +54,11 @@ public:
     /**
      * @brief Virtual destructor
      */
-    virtual ~LocalizerBase() = default;
+    virtual ~OdomEstimatorBase() = default;
 
 public:
     /**
-     * @brief Initialize the localizer - to be implemented by derived classes
+     * @brief Initialize the odom_estimator - to be implemented by derived classes
      * @return True if initialization is successful
      */
     bool initialize();
@@ -89,12 +89,12 @@ public:
     virtual void processImu(const sensor_msgs::msg::Imu::SharedPtr imu) = 0;
 
     /**
-     * @brief Check if the localizer is initialized
+     * @brief Check if the odom_estimator is initialized
      * @return True if initialized
      */
     inline bool isInitialized() const { return is_init_.load(); }
     inline bool isMapToOdomInitialized() const { return map_to_odom_initialized_; }
-    // inline bool isDoingStateEstimation() const { return is_doing_state_estimation_.load(); }
+    // inline bool isDoingOdomEstimation() const { return is_doing_odom_estimation_.load(); }
     
     /**
      * @brief Check if the external landmark is initialized in the state.
@@ -176,7 +176,7 @@ protected:
 
     // State management
     std::atomic<bool> is_init_;
-    std::atomic<bool> is_doing_state_estimation_;
+    std::atomic<bool> is_doing_odom_estimation_;
     std::atomic<bool> is_landmark_correction_enabled_;
     
     // Map to Odom transform (for localization correction)
@@ -217,7 +217,7 @@ protected:
     void updateMapToOdomTransform(Eigen::Vector3d pos, Eigen::Quaterniond angle, rclcpp::Time time);
 };
 
-} // namespace localization
+} // namespace odom_estimation
 } // namespace gole
 
-#endif // LOCALIZATION_LOCALIZER_LOCALIZER_BASE_HPP_
+#endif // ODOM_ESTIMATION_ODOM_ESTIMATOR_ODOM_ESTIMATOR_BASE_HPP_

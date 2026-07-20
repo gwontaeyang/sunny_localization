@@ -1,4 +1,4 @@
-# localization
+# odom_estimation
 
 Wheel Odometry + IMU를 EKF로 융합하여 로봇 pose를 추정하는 Lifecycle Node 패키지.  
 V-마커 검출 시 EKF-SLAM 모드로 전환하여 랜드마크 기반 위치 보정을 수행한다.
@@ -8,43 +8,43 @@ V-마커 검출 시 EKF-SLAM 모드로 전환하여 랜드마크 기반 위치 �
 ## 1. 전체 구조
 
 ```
-localization/
+odom_estimation/
 ├── src/
-│   ├── localization_node.cpp          ← main() 진입점
-│   ├── localization.cpp               ← LifecycleNode, ROS 통신 창구
-│   ├── localizer_factory.cpp          ← Factory (알고리즘 타입별 객체 생성)
-│   └── localizer/
-│       ├── localizer_base.cpp         ← 추상 기반 클래스 구현 (공통 유틸)
-│       └── localizer_ekf.cpp          ← EKF (+ SLAM) 알고리즘 핵심 구현
+│   ├── odom_estimation_node.cpp       ← main() 진입점
+│   ├── odom_estimation.cpp            ← LifecycleNode, ROS 통신 창구
+│   ├── odom_estimator_factory.cpp     ← Factory (알고리즘 타입별 객체 생성)
+│   └── odom_estimator/
+│       ├── odom_estimator_base.cpp    ← 추상 기반 클래스 구현 (공통 유틸)
+│       └── odom_estimator_ekf.cpp     ← EKF (+ SLAM) 알고리즘 핵심 구현
 │
-└── include/localization/
-    ├── localization.hpp               ← Localization LifecycleNode 헤더
-    ├── localizer_factory.hpp          ← Factory 선언
-    └── localizer/
-        ├── localizer_base.hpp         ← 추상 인터페이스 + 공통 멤버 정의
-        ├── localizer_ekf.hpp          ← LocalizerEKF 선언
-        └── localizer_types.hpp        ← State, Params, 이벤트 상수, 타입 enum
+└── include/odom_estimation/
+    ├── odom_estimation.hpp            ← OdomEstimation LifecycleNode 헤더
+    ├── odom_estimator_factory.hpp     ← Factory 선언
+    └── odom_estimator/
+        ├── odom_estimator_base.hpp    ← 추상 인터페이스 + 공통 멤버 정의
+        ├── odom_estimator_ekf.hpp     ← OdomEstimatorEKF 선언
+        └── odom_estimator_types.hpp   ← State, Params, 이벤트 상수, 타입 enum
 ```
 
 ### 클래스 관계
 
 ```
-Localization (LifecycleNode)         ← ROS 통신 창구
-  └── LocalizerBase* (인터페이스)    ← 알고리즘 추상화 계층
-         └── LocalizerEKF            ← 유일한 현재 구현체
+OdomEstimation (LifecycleNode)        ← ROS 통신 창구
+  └── OdomEstimatorBase* (인터페이스)  ← 알고리즘 추상화 계층
+         └── OdomEstimatorEKF         ← 유일한 현재 구현체
                └── VMarker           ← v_marker_finder 라이브러리 (도킹 시 사용)
 ```
 
 ---
 
-## 2. LocalizerBase 의 Factory 구조
+## 2. OdomEstimatorBase 의 Factory 구조
 
-`LocalizerBase`를 인터페이스로 두고 `LocalizerFactory::createLocalizer(type, ...)`로 구체 구현체를 생성한다.  
+`OdomEstimatorBase`를 인터페이스로 두고 `OdomEstimatorFactory::createOdomEstimator(type, ...)`로 구체 구현체를 생성한다.  
 이는 **추후 로컬라이제이션 알고리즘을 조건에 따라 교체**할 수 있도록 일부러 설계한 구조이다.
 
 ```cpp
-// localizer_types.hpp 에 정의된 지원 예정 타입들
-enum class LocalizerType {
+// odom_estimator_types.hpp 에 정의된 지원 예정 타입들
+enum class OdomEstimatorType {
     EKF,       // 현재 유일하게 구현됨
     AMCL,      // 예정 (AMCL — Monte Carlo)
     PARTICLE,  // 예정 (Particle Filter)
@@ -54,24 +54,24 @@ enum class LocalizerType {
 ```
 
 ```cpp
-// localizer_factory.cpp — 추가 구현은 아래에 case를 추가하면 됨
-if (localizer_type == "EKF") {
-    return std::make_unique<LocalizerEKF>(...);
-// } else if (localizer_type == "AMCL") {
-//     return std::make_unique<AmclLocalizer>(...);
+// odom_estimator_factory.cpp — 추가 구현은 아래에 case를 추가하면 됨
+if (odom_estimator_type == "EKF") {
+    return std::make_unique<OdomEstimatorEKF>(...);
+// } else if (odom_estimator_type == "AMCL") {
+//     return std::make_unique<AmclOdomEstimator>(...);
 }
 ```
 
 새 알고리즘 추가 방법:
-1. `LocalizerBase`를 상속하는 새 클래스 구현 (`processWheel`, `processImu`, `processPointCloud`, `prediction`, `correctionXxx` 구현)
+1. `OdomEstimatorBase`를 상속하는 새 클래스 구현 (`processWheel`, `processImu`, `processPointCloud`, `prediction`, `correctionXxx` 구현)
 2. Factory의 `if-else` 에 새 타입 추가
-3. YAML 파라미터 `localizer_type` 변경
+3. YAML 파라미터 `odom_estimator_type` 변경
 
 ---
 
 ## 3. 현재 사용하는 로컬라이제이션 알고리즘 — EKF
 
-`localizer_type: "EKF"` (설정 파일 기본값)
+`odom_estimator_type: "EKF"` (설정 파일 기본값)
 
 ### 상태 벡터 (8차원)
 
@@ -195,7 +195,7 @@ Jacobian H : (3×8), 로봇 pose와 랜드마크 pose에 모두 의존
 
 ```
 using_vmarker_localization_ = true
-    → localizer_->enableSlamMode()     ← is_slam_mode_ = true
+    → odom_estimator_->enableSlamMode()     ← is_slam_mode_ = true
     → pointCloudCallback 에서 processPointCloud 활성화
 ```
 
@@ -254,7 +254,7 @@ using_vmarker_localization_ = true
   [자동 비활성화]
   로봇이 V-마커 corrected pose로부터 1m 이내 진입 시
         → using_vmarker_localization_ = false
-        → localizer_->disableSlamMode()
+        → odom_estimator_->disableSlamMode()
         → 이후 포인트클라우드 처리 중단, 일반 EKF로 복귀
 ```
 
@@ -288,7 +288,7 @@ using_vmarker_localization_ = true
 
 | 단계 | 수행 내용 |
 |---|---|
-| **`on_configure()`** | 파라미터 로드, TF 초기화, Pub/Sub 생성, DiagnosticManager 생성, `LocalizerFactory`로 `LocalizerEKF` 생성·초기화, 원점 초기 pose 설정, Notification 콜백 등록 |
+| **`on_configure()`** | 파라미터 로드, TF 초기화, Pub/Sub 생성, DiagnosticManager 생성, `OdomEstimatorFactory`로 `OdomEstimatorEKF` 생성·초기화, 원점 초기 pose 설정, Notification 콜백 등록 |
 | **`on_activate()`** | Publisher 활성화, **10ms 주기 TF 발행 타이머 생성** |
 | **`on_deactivate()`** | 타이머 해제, Publisher 비활성화 |
-| **`on_cleanup()`** | Subscriber·Publisher 전체 리셋, Localizer 해제 |
+| **`on_cleanup()`** | Subscriber·Publisher 전체 리셋, OdomEstimator 해제 |

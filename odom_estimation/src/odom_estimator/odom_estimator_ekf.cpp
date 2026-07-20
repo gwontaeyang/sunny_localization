@@ -1,21 +1,21 @@
-#include "localization/localizer/localizer_ekf.hpp"
+#include "odom_estimation/odom_estimator/odom_estimator_ekf.hpp"
 #include "kinematics/kinematics.hpp"
 
 namespace gole {
-namespace localization {
+namespace odom_estimation {
 
-LocalizerEKF::LocalizerEKF(rclcpp_lifecycle::LifecycleNode* node,
+OdomEstimatorEKF::OdomEstimatorEKF(rclcpp_lifecycle::LifecycleNode* node,
                            std::shared_ptr<spdlog::logger> logger,
                            std::shared_ptr<diagnostic::DiagnosticManager> diagnostic_manager,
                            const Params& params)
-    : LocalizerBase(node, logger, diagnostic_manager, params)
+    : OdomEstimatorBase(node, logger, diagnostic_manager, params)
 {
     sensor_fusion_timer_ = node_->create_wall_timer(
         std::chrono::milliseconds(20),
-        std::bind(&LocalizerEKF::processSensorFusionTick, this));
+        std::bind(&OdomEstimatorEKF::processSensorFusionTick, this));
 }
 
-void LocalizerEKF::findInitPose(const geometry_msgs::msg::PoseWithCovarianceStamped& initial_guess)
+void OdomEstimatorEKF::findInitPose(const geometry_msgs::msg::PoseWithCovarianceStamped& initial_guess)
 {
     logger_->info("Finding initial pose using observation data...");
     {
@@ -80,7 +80,7 @@ void LocalizerEKF::findInitPose(const geometry_msgs::msg::PoseWithCovarianceStam
                         initial_guess.pose.pose.orientation.z);
     auto time = rclcpp::Time(initial_guess.header.stamp);
 
-    // The initial pose used by this localizer is an odom-frame seed for the
+    // The initial pose used by this odom_estimator is an odom-frame seed for the
     // EKF state. Keep map->odom as identity here to avoid applying the same
     // pose both in state (odom->base_link) and in TF (map->odom).
     Eigen::Vector3d map_to_odom_pos(0.0, 0.0, 0.0);
@@ -98,7 +98,7 @@ void LocalizerEKF::findInitPose(const geometry_msgs::msg::PoseWithCovarianceStam
                   yaw * 180.0 / M_PI);
 }
 
-void LocalizerEKF::processInitialPose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr pose)
+void OdomEstimatorEKF::processInitialPose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr pose)
 {
     logger_->info("Received initial pose, finding actual initial pose...");
 
@@ -108,16 +108,16 @@ void LocalizerEKF::processInitialPose(const geometry_msgs::msg::PoseWithCovarian
 
     // Publish the refined pose and initial map->odom transform
     triggerNotify(INIT_POSE_PROCESSED_EVENT, std::make_any<nav_msgs::msg::Odometry>(odom));
-    logger_->info("Initial pose found and set! Localizer is now initialized.");
+    logger_->info("Initial pose found and set! OdomEstimator is now initialized.");
 }
 
-void LocalizerEKF::processSensorFusionTick()
+void OdomEstimatorEKF::processSensorFusionTick()
 {
     if (!is_init_) {
         return;
     }
 
-    if (is_doing_state_estimation_.exchange(true)) {
+    if (is_doing_odom_estimation_.exchange(true)) {
         logger_->debug("[processSensorFusionTick] State estimation in progress, skipping tick");
         return;
     }
@@ -133,7 +133,7 @@ void LocalizerEKF::processSensorFusionTick()
     }
 
     if (wheel_queue.empty() && imu_queue.empty()) {
-        is_doing_state_estimation_.store(false);
+        is_doing_odom_estimation_.store(false);
         return;
     }
 
@@ -209,10 +209,10 @@ void LocalizerEKF::processSensorFusionTick()
     auto result_odom = state2Msg();
     triggerNotify(WHEEL_PROCESSED_EVENT, std::make_any<nav_msgs::msg::Odometry>(result_odom));
 
-    is_doing_state_estimation_.store(false);
+    is_doing_odom_estimation_.store(false);
 }
 
-void LocalizerEKF::processLandmarkObservation(
+void OdomEstimatorEKF::processLandmarkObservation(
     const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr observation)
 {
     if (!is_landmark_correction_enabled_.load()) {
@@ -220,11 +220,11 @@ void LocalizerEKF::processLandmarkObservation(
     }
 
     if (!is_init_) {
-        logger_->debug("[processLandmarkObservation] Localizer not initialized, skipping observation");
+        logger_->debug("[processLandmarkObservation] OdomEstimator not initialized, skipping observation");
         return;
     }
 
-    if (is_doing_state_estimation_.exchange(true)) {
+    if (is_doing_odom_estimation_.exchange(true)) {
         logger_->debug("[processLandmarkObservation] State estimation in progress, skipping observation");
         return;
     }
@@ -272,10 +272,10 @@ void LocalizerEKF::processLandmarkObservation(
     auto result_odom = state2Msg();
     triggerNotify(POINT_CLOUD_PROCESSED_EVENT, std::make_any<nav_msgs::msg::Odometry>(result_odom));
 
-    is_doing_state_estimation_.store(false);
+    is_doing_odom_estimation_.store(false);
 }
 
-void LocalizerEKF::processWheel(const nav_msgs::msg::Odometry::SharedPtr odom) // with update
+void OdomEstimatorEKF::processWheel(const nav_msgs::msg::Odometry::SharedPtr odom) // with update
 {
     if (!odom) {
         return;
@@ -305,7 +305,7 @@ void LocalizerEKF::processWheel(const nav_msgs::msg::Odometry::SharedPtr odom) /
     logger_->debug("[processWheel] Stored latest wheel odometry: v={:.3f} m/s", odom->twist.twist.linear.x);
 }
 
-void LocalizerEKF::processImu(const sensor_msgs::msg::Imu::SharedPtr imu) // with update
+void OdomEstimatorEKF::processImu(const sensor_msgs::msg::Imu::SharedPtr imu) // with update
 {
     if (!imu) {
         return;
@@ -324,7 +324,7 @@ void LocalizerEKF::processImu(const sensor_msgs::msg::Imu::SharedPtr imu) // wit
     logger_->debug("[processImu] Stored latest IMU gyro: w={:.3f}°/s", imu->angular_velocity.z * 180.0 / M_PI);
 }
 
-bool LocalizerEKF::prediction(const geometry_msgs::msg::Twist::SharedPtr cmd_vel, double dt)
+bool OdomEstimatorEKF::prediction(const geometry_msgs::msg::Twist::SharedPtr cmd_vel, double dt)
 {
     std::lock_guard<std::mutex> lock(state_mutex_);
 
@@ -481,7 +481,7 @@ bool LocalizerEKF::prediction(const geometry_msgs::msg::Twist::SharedPtr cmd_vel
     return true;
 }
 
-bool LocalizerEKF::correctionLandmarkObservation(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr observation)
+bool OdomEstimatorEKF::correctionLandmarkObservation(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr observation)
 {
     std::lock_guard<std::mutex> lock(state_mutex_);
 
@@ -737,7 +737,7 @@ bool LocalizerEKF::correctionLandmarkObservation(const geometry_msgs::msg::PoseW
 }
 
 
-bool LocalizerEKF::correctionImu(const sensor_msgs::msg::Imu::SharedPtr imu)
+bool OdomEstimatorEKF::correctionImu(const sensor_msgs::msg::Imu::SharedPtr imu)
 {
     std::lock_guard<std::mutex> lock(state_mutex_);
 
@@ -780,7 +780,7 @@ bool LocalizerEKF::correctionImu(const sensor_msgs::msg::Imu::SharedPtr imu)
     return true;
 }
 
-bool LocalizerEKF::correctionWheel(const nav_msgs::msg::Odometry::SharedPtr odom)
+bool OdomEstimatorEKF::correctionWheel(const nav_msgs::msg::Odometry::SharedPtr odom)
 {
     std::lock_guard<std::mutex> lock(state_mutex_);
 
@@ -863,7 +863,7 @@ bool LocalizerEKF::correctionWheel(const nav_msgs::msg::Odometry::SharedPtr odom
     return true;
 }
 
-void LocalizerEKF::enableLandmarkCorrection()
+void OdomEstimatorEKF::enableLandmarkCorrection()
 {
     std::lock_guard<std::mutex> lock(state_mutex_);
 
@@ -873,7 +873,7 @@ void LocalizerEKF::enableLandmarkCorrection()
     }
 
     if (!is_init_.load()) {
-        logger_->warn("Cannot enable landmark correction: localizer not initialized");
+        logger_->warn("Cannot enable landmark correction: odom_estimator not initialized");
         return;
     }
 
@@ -885,7 +885,7 @@ void LocalizerEKF::enableLandmarkCorrection()
                   current_state_.mu.size());
 }
 
-void LocalizerEKF::disableLandmarkCorrection()
+void OdomEstimatorEKF::disableLandmarkCorrection()
 {
     std::lock_guard<std::mutex> lock(state_mutex_);
 
@@ -895,7 +895,7 @@ void LocalizerEKF::disableLandmarkCorrection()
     }
 
     if (!is_init_.load()) {
-        logger_->warn("Cannot disable landmark correction: localizer not initialized");
+        logger_->warn("Cannot disable landmark correction: odom_estimator not initialized");
         return;
     }
 
@@ -923,7 +923,7 @@ void LocalizerEKF::disableLandmarkCorrection()
                   current_state_.mu.size());
 }
 
-bool LocalizerEKF::isLandmarkInitialized() const
+bool OdomEstimatorEKF::isLandmarkInitialized() const
 {
     // Check if in SLAM mode
     if (!is_landmark_correction_enabled_.load()) {
@@ -934,5 +934,5 @@ bool LocalizerEKF::isLandmarkInitialized() const
 }
 
 
-} // namespace localization
+} // namespace odom_estimation
 } // namespace gole

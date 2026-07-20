@@ -1,19 +1,19 @@
 #include <memory>
 
 #include "rclcpp/rclcpp.hpp"
-#include "localization/localization.hpp"
+#include "odom_estimation/odom_estimation.hpp"
 
 int main(int argc, char * argv[])
 {
     rclcpp::init(argc, argv);
 
     try {
-        auto node = std::make_shared<gole::localization::Localization>();
+        auto node = std::make_shared<gole::odom_estimation::OdomEstimation>();
         
-        RCLCPP_INFO(node->get_logger(), "Localization Node started");
+        RCLCPP_INFO(node->get_logger(), "Odom Estimation Node started");
         rclcpp::spin(node->get_node_base_interface());
     } catch (const std::exception& e) {
-        RCLCPP_ERROR(rclcpp::get_logger("state_estimation"), "Exception: %s", e.what());
+        RCLCPP_ERROR(rclcpp::get_logger("odom_estimation"), "Exception: %s", e.what());
         rclcpp::shutdown();
         return 1;
     }

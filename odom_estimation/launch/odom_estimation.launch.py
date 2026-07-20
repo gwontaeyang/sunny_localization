@@ -9,10 +9,10 @@ from launch.substitutions import LaunchConfiguration
 
 def generate_launch_description():
     # Get the package directory
-    pkg_dir = get_package_share_directory('state_estimation')
+    pkg_dir = get_package_share_directory('odom_estimation')
     
     # Path to the config file
-    config_file = os.path.join(pkg_dir, 'config', 'state_estimation_params.yaml')
+    config_file = os.path.join(pkg_dir, 'config', 'odom_estimation_params.yaml')
 
     use_sim_time_arg = DeclareLaunchArgument(
         "use_sim_time", default_value="false", description="Use simulation time"
@@ -24,15 +24,15 @@ def generate_launch_description():
     return LaunchDescription([
         use_sim_time_arg,
         LifecycleNode(
-            package='state_estimation',
-            executable='state_estimation_node',
-            name='state_estimation_node',
+            package='odom_estimation',
+            executable='odom_estimation_node',
+            name='odom_estimation_node',
             namespace='',
             output='screen',
             parameters=[
                 config_file,
-                {'localizer_type': 'EKF'},
-                {'node_name': 'state_estimation_node'},
+                {'odom_estimator_type': 'EKF'},
+                {'node_name': 'odom_estimation_node'},
                 {"use_sim_time": use_sim_time}
             ],
             remappings=[],

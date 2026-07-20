@@ -1,13 +1,13 @@
 #include <eigen3/Eigen/Dense>
 #include "logger/logger.hpp"
-#include "localization/localizer/localizer_base.hpp"
+#include "odom_estimation/odom_estimator/odom_estimator_base.hpp"
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
 
 namespace gole {
-namespace localization {
+namespace odom_estimation {
 
-localization::LocalizerBase::LocalizerBase(rclcpp_lifecycle::LifecycleNode* node,
+OdomEstimatorBase::OdomEstimatorBase(rclcpp_lifecycle::LifecycleNode* node,
                                             std::shared_ptr<spdlog::logger> logger,
                                             std::shared_ptr<diagnostic::DiagnosticManager> diagnostic_manager,
                                             const Params& params) 
@@ -18,11 +18,11 @@ localization::LocalizerBase::LocalizerBase(rclcpp_lifecycle::LifecycleNode* node
 {
     // Initialize state variables
     is_init_.store(false);
-    is_doing_state_estimation_.store(false);
+    is_doing_odom_estimation_.store(false);
     is_landmark_correction_enabled_.store(false);
 }
 
-bool LocalizerBase::initialize()
+bool OdomEstimatorBase::initialize()
 {
     // Declare and get frame ID parameters
     map_frame_id_ = node_->declare_parameter("map_frame_id", map_frame_id_);
@@ -71,7 +71,7 @@ bool LocalizerBase::initialize()
 }
 
 
-geometry_msgs::msg::TransformStamped LocalizerBase::getOdomToBaselinkTransform() {
+geometry_msgs::msg::TransformStamped OdomEstimatorBase::getOdomToBaselinkTransform() {
     auto odom_msg = state2Msg();
     geometry_msgs::msg::TransformStamped odom_to_base_link;
     odom_to_base_link.header.stamp = odom_msg.header.stamp;
@@ -86,17 +86,17 @@ geometry_msgs::msg::TransformStamped LocalizerBase::getOdomToBaselinkTransform()
     return odom_to_base_link;
 }
 
- State LocalizerBase::getCurrentState() {
+ State OdomEstimatorBase::getCurrentState() {
     std::lock_guard<std::mutex> lock(state_mutex_);
     return current_state_;
 }
 
-void LocalizerBase::updateStateTime(const rclcpp::Time& new_time) {
+void OdomEstimatorBase::updateStateTime(const rclcpp::Time& new_time) {
     std::lock_guard<std::mutex> lock(state_mutex_);
     current_state_.time = new_time;
 }
 
-std::optional<geometry_msgs::msg::PoseWithCovarianceStamped> LocalizerBase::getLandmarkState() {
+std::optional<geometry_msgs::msg::PoseWithCovarianceStamped> OdomEstimatorBase::getLandmarkState() {
     std::lock_guard<std::mutex> lock(state_mutex_);
     
     if (!is_landmark_correction_enabled_.load()) {
@@ -147,7 +147,7 @@ std::optional<geometry_msgs::msg::PoseWithCovarianceStamped> LocalizerBase::getL
 }
 
 
-nav_msgs::msg::Odometry LocalizerBase::state2Msg() 
+nav_msgs::msg::Odometry OdomEstimatorBase::state2Msg() 
 {
     std::lock_guard<std::mutex> lock(state_mutex_);
 
@@ -195,7 +195,7 @@ nav_msgs::msg::Odometry LocalizerBase::state2Msg()
     return odom;
 }
 
-void LocalizerBase::updateMapToOdomTransform(const nav_msgs::msg::Odometry::SharedPtr odom)
+void OdomEstimatorBase::updateMapToOdomTransform(const nav_msgs::msg::Odometry::SharedPtr odom)
 {
     std::lock_guard<std::mutex> lock(state_mutex_);
     // Create Eigen transforms for calculation
@@ -223,7 +223,7 @@ void LocalizerBase::updateMapToOdomTransform(const nav_msgs::msg::Odometry::Shar
     updateMapToOdomTransform(map_to_odom, current_state_.time);
 }
 
-void LocalizerBase::updateMapToOdomTransform(Eigen::Isometry3d& map_to_odom, rclcpp::Time time) {
+void OdomEstimatorBase::updateMapToOdomTransform(Eigen::Isometry3d& map_to_odom, rclcpp::Time time) {
     // Calculate map -> odom transform based on corrected pose
     // This should only be called when there's actual localization correction
  
@@ -252,7 +252,7 @@ void LocalizerBase::updateMapToOdomTransform(Eigen::Isometry3d& map_to_odom, rcl
 }
 
 
-void LocalizerBase::updateMapToOdomTransform(Eigen::Vector3d pos, Eigen::Quaterniond angle, rclcpp::Time time) {
+void OdomEstimatorBase::updateMapToOdomTransform(Eigen::Vector3d pos, Eigen::Quaterniond angle, rclcpp::Time time) {
     // Calculate map -> odom transform based on corrected pose
     // This should only be called when there's actual localization correction
  
@@ -279,5 +279,5 @@ void LocalizerBase::updateMapToOdomTransform(Eigen::Vector3d pos, Eigen::Quatern
 }
 
 
-} // namespace localization
+} // namespace odom_estimation
 } // namespace gole

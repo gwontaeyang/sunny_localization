@@ -1,12 +1,12 @@
-#ifndef LOCALIZATION_LOCALIZER_LOCALIZER_TYPES_HPP_
-#define LOCALIZATION_LOCALIZER_LOCALIZER_TYPES_HPP_
+#ifndef ODOM_ESTIMATION_ODOM_ESTIMATOR_ODOM_ESTIMATOR_TYPES_HPP_
+#define ODOM_ESTIMATION_ODOM_ESTIMATOR_ODOM_ESTIMATOR_TYPES_HPP_
 
 #include <string>
 #include <stdexcept>
 #include <memory>
 
 namespace gole {
-namespace localization {
+namespace odom_estimation {
 
 /**
  * @brief Localization system parameters
@@ -22,9 +22,9 @@ struct Params {
 };
 
 /**
- * @brief Enumeration of supported localizer types
+ * @brief Enumeration of supported odom_estimator types
  */
-enum class LocalizerType {
+enum class OdomEstimatorType {
     EKF,        // Extended Kalman Filter
     AMCL,       // Adaptive Monte Carlo Localization  
     PARTICLE,   // Particle Filter
@@ -33,21 +33,21 @@ enum class LocalizerType {
 };
 
 /**
- * @brief Convert localizer type to string
- * @param type Localizer type
- * @return String representation of the localizer type
+ * @brief Convert odom_estimator type to string
+ * @param type OdomEstimator type
+ * @return String representation of the odom_estimator type
  */
-inline std::string localizerTypeToString(LocalizerType type) {
+inline std::string odomEstimatorTypeToString(OdomEstimatorType type) {
     switch (type) {
-        case LocalizerType::EKF:
+        case OdomEstimatorType::EKF:
             return "EKF";
-        case LocalizerType::AMCL:
+        case OdomEstimatorType::AMCL:
             return "AMCL";
-        case LocalizerType::PARTICLE:
+        case OdomEstimatorType::PARTICLE:
             return "PARTICLE";
-        case LocalizerType::UKF:
+        case OdomEstimatorType::UKF:
             return "UKF";
-        case LocalizerType::SLAM:
+        case OdomEstimatorType::SLAM:
             return "SLAM";
         default:
             return "UNKNOWN";
@@ -55,23 +55,23 @@ inline std::string localizerTypeToString(LocalizerType type) {
 }
 
 /**
- * @brief Convert string to localizer type
- * @param type_str String representation of localizer type
- * @return Localizer type
+ * @brief Convert string to odom_estimator type
+ * @param type_str String representation of odom_estimator type
+ * @return OdomEstimator type
  */
-inline LocalizerType stringToLocalizerType(const std::string& type_str) {
+inline OdomEstimatorType stringToOdomEstimatorType(const std::string& type_str) {
     if (type_str == "EKF") {
-        return LocalizerType::EKF;
+        return OdomEstimatorType::EKF;
     } else if (type_str == "AMCL") {
-        return LocalizerType::AMCL;
+        return OdomEstimatorType::AMCL;
     } else if (type_str == "PARTICLE") {
-        return LocalizerType::PARTICLE;
+        return OdomEstimatorType::PARTICLE;
     } else if (type_str == "UKF") {
-        return LocalizerType::UKF;
+        return OdomEstimatorType::UKF;
     } else if (type_str == "SLAM") {
-        return LocalizerType::SLAM;
+        return OdomEstimatorType::SLAM;
     } else {
-        throw std::invalid_argument("Unknown localizer type: " + type_str);
+        throw std::invalid_argument("Unknown odom_estimator type: " + type_str);
     }
 }
 
@@ -214,7 +214,7 @@ struct State
 #define POINT_CLOUD_PROCESSED_EVENT "point_cloud_processed"
 #define IMU_PROCESSED_EVENT "imu_processed"
 
-} // namespace localization
+} // namespace odom_estimation
 } // namespace gole
 
-#endif // LOCALIZATION_LOCALIZER_LOCALIZER_TYPES_HPP_
+#endif // ODOM_ESTIMATION_ODOM_ESTIMATOR_ODOM_ESTIMATOR_TYPES_HPP_

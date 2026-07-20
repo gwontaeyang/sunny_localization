@@ -4,19 +4,19 @@
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "rmw/qos_profiles.h"
 
-#include "localization/localization.hpp"
-#include "localization/localizer_factory.hpp"
+#include "odom_estimation/odom_estimation.hpp"
+#include "odom_estimation/odom_estimator_factory.hpp"
 
 namespace gole {
-namespace localization {
+namespace odom_estimation {
 
-Localization::Localization()
-    : rclcpp_lifecycle::LifecycleNode("state_estimation")
+OdomEstimation::OdomEstimation()
+    : rclcpp_lifecycle::LifecycleNode("odom_estimation_node")
     , is_forward_(true)
     , using_landmark_correction_(false)
 {
     logger_ = gole::logger::Logger::createPackageLogger(this->get_name(), spdlog::level::level_enum::info);
-    logger_->info("localization starting...");
+    logger_->info("odom estimation starting...");
     transform_last_log_time_ = std::chrono::steady_clock::now();
 }
 
@@ -25,10 +25,10 @@ Localization::Localization()
 // -----------------------------------------------------------------------------
 
 rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn
-Localization::on_configure(const rclcpp_lifecycle::State & /*state*/)
+OdomEstimation::on_configure(const rclcpp_lifecycle::State & /*state*/)
 {
     try {
-        logger_->info("Configuring Localization...");
+        logger_->info("Configuring Odom Estimation...");
         setupParameters();
         gole::logger::Logger::setLogLevel(this->get_name(), spdlog::level::from_str(declare_parameter("log_level", "info")));
 
@@ -43,7 +43,7 @@ Localization::on_configure(const rclcpp_lifecycle::State & /*state*/)
 
         initialize();
 
-        logger_->info("Localization configured successfully");
+        logger_->info("Odom Estimation configured successfully");
         return rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS;
     }
     catch (const std::exception& e) {
@@ -53,9 +53,9 @@ Localization::on_configure(const rclcpp_lifecycle::State & /*state*/)
 }
 
 rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn
-Localization::on_activate(const rclcpp_lifecycle::State & /*state*/)
+OdomEstimation::on_activate(const rclcpp_lifecycle::State & /*state*/)
 {
-    logger_->info("Activating Localization...");
+    logger_->info("Activating Odom Estimation...");
 
     // Activate publishers
     pose_pub_->on_activate();
@@ -70,17 +70,17 @@ Localization::on_activate(const rclcpp_lifecycle::State & /*state*/)
     // Create and start timer only when activated
     transform_timer_ = create_wall_timer(
         std::chrono::milliseconds(10),
-        std::bind(&Localization::timerCallback, this)
+        std::bind(&OdomEstimation::timerCallback, this)
     );
 
-    logger_->info("Localization activated successfully");
+    logger_->info("Odom Estimation activated successfully");
     return rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS;
 }
 
 rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn
-Localization::on_deactivate(const rclcpp_lifecycle::State & /*state*/)
+OdomEstimation::on_deactivate(const rclcpp_lifecycle::State & /*state*/)
 {
-    logger_->info("Deactivating Localization...");
+    logger_->info("Deactivating Odom Estimation...");
 
     // Stop timers when deactivating
     if (transform_timer_) {
@@ -98,37 +98,37 @@ Localization::on_deactivate(const rclcpp_lifecycle::State & /*state*/)
         diagnostic_manager_->deactivate();
     }
 
-    logger_->info("Localization deactivated successfully");
+    logger_->info("Odom Estimation deactivated successfully");
     return rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS;
 }
 
 rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn
-Localization::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
+OdomEstimation::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
 {
-    logger_->info("Cleaning up Localization...");
+    logger_->info("Cleaning up Odom Estimation...");
     
     // Reset all components
     odom_sub_.reset();
     imu_sub_.reset();
     pose_command_sub_.reset();
-    localizer_.reset();
+    odom_estimator_.reset();
 
-    logger_->info("Localization cleaned up successfully");
+    logger_->info("Odom Estimation cleaned up successfully");
     return rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS;
 }
 
 rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn
-Localization::on_shutdown(const rclcpp_lifecycle::State & /*state*/)
+OdomEstimation::on_shutdown(const rclcpp_lifecycle::State & /*state*/)
 {
-    logger_->info("Shutting down Localization...");
+    logger_->info("Shutting down Odom Estimation...");
     
     // Reset all components
     odom_sub_.reset();
     imu_sub_.reset();
     pose_command_sub_.reset();
-    localizer_.reset();
+    odom_estimator_.reset();
 
-    logger_->info("Localization shut down successfully");
+    logger_->info("Odom Estimation shut down successfully");
     return rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS;
 }
 
@@ -136,14 +136,14 @@ Localization::on_shutdown(const rclcpp_lifecycle::State & /*state*/)
 // Initialize Functions
 // -----------------------------------------------------------------------------
 
-void Localization::setupParameters()
+void OdomEstimation::setupParameters()
 {
     // Create shared parameter structure
     params_ = std::make_shared<Params>();
     
-    std::string localizer_type_str = declare_parameter("localizer_type", std::string("EKF"));
-    localizer_type_ = stringToLocalizerType(localizer_type_str);
-    logger_->info("Localization parameter 'localizer_type' set to '{}'", localizer_type_str);
+    std::string odom_estimator_type_str = declare_parameter("odom_estimator_type", std::string("EKF"));
+    odom_estimator_type_ = stringToOdomEstimatorType(odom_estimator_type_str);
+    logger_->info("Odom Estimation parameter 'odom_estimator_type' set to '{}'", odom_estimator_type_str);
     
     // General localization parameters
     params_->is_forward = true;  // Will be updated by topic callback
@@ -164,7 +164,7 @@ void Localization::setupParameters()
                   landmark_correction_enable_topic_, landmark_observation_topic_);
 }
 
-void Localization::setupPublishers()
+void OdomEstimation::setupPublishers()
 {
     // Create pose publisher
     pose_pub_ = create_publisher<nav_msgs::msg::Odometry>("/odom", rclcpp::QoS(10));
@@ -177,47 +177,47 @@ void Localization::setupPublishers()
     logger_->info("Publishers created");
 }
 
-void Localization::setupSubscribers()
+void OdomEstimation::setupSubscribers()
 {
     landmark_observation_sub_ = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
         landmark_observation_topic_, rclcpp::QoS(10),
-        std::bind(&Localization::landmarkObservationCallback, this, std::placeholders::_1));
+        std::bind(&OdomEstimation::landmarkObservationCallback, this, std::placeholders::_1));
 
     // Setup odom and IMU subscribers
     odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
         "/motor_driver_node/odom", 10,
-        std::bind(&Localization::wheelOdomCallback, this, std::placeholders::_1));
+        std::bind(&OdomEstimation::wheelOdomCallback, this, std::placeholders::_1));
 
     imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
         "/imu/data", 10,
         // "/imu_driver_node/imu/corrected_data", 10,
-        std::bind(&Localization::imuOdomCallback, this, std::placeholders::_1));
+        std::bind(&OdomEstimation::imuOdomCallback, this, std::placeholders::_1));
 
     pose_command_sub_ = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
         pose_command_topic_, rclcpp::QoS(10),
-        std::bind(&Localization::poseCommandCallback, this, std::placeholders::_1));
+        std::bind(&OdomEstimation::poseCommandCallback, this, std::placeholders::_1));
 
     // Create is_forward subscriber
     is_forward_sub_ = create_subscription<std_msgs::msg::Bool>(
         "task_manager_node/is_forward", rclcpp::QoS(10).reliable().transient_local(),
-        std::bind(&Localization::isForwardCallback, this, std::placeholders::_1));
+        std::bind(&OdomEstimation::isForwardCallback, this, std::placeholders::_1));
     logger_->info("Created is_forward subscriber");
 
     landmark_correction_enable_sub_ = create_subscription<std_msgs::msg::Bool>(
         landmark_correction_enable_topic_, rclcpp::QoS(10).reliable().transient_local(),
-        std::bind(&Localization::landmarkCorrectionEnableCallback, this, std::placeholders::_1));
+        std::bind(&OdomEstimation::landmarkCorrectionEnableCallback, this, std::placeholders::_1));
     logger_->info("Created landmark correction enable subscriber");
 
     logger_->info("Subscribers created with synchronized odom and IMU filter");
 }
 
-bool Localization::initialize()
+bool OdomEstimation::initialize()
 {
-    logger_->info("Starting localizer initialization process...");
+    logger_->info("Starting odom_estimator initialization process...");
 
-    // Create appropriate localizer based on localizer_type parameter
-    std::string localizer_type_str = localizerTypeToString(localizer_type_);
-    logger_->info("Requested localizer type: '{}'",  localizer_type_str);
+    // Create appropriate odom_estimator based on odom_estimator_type parameter
+    std::string odom_estimator_type_str = odomEstimatorTypeToString(odom_estimator_type_);
+    logger_->info("Requested odom_estimator type: '{}'",  odom_estimator_type_str);
 
     // Create diagnostic manager with lifecycle node
     double robot_pose_timeout_ms = declare_parameter("robot_pose_timeout", 100.0);
@@ -265,10 +265,10 @@ bool Localization::initialize()
         }
     );
 
-    localizer_ = LocalizerFactory::createLocalizer(localizer_type_str, this, logger_, diagnostic_manager_, *params_);
+    odom_estimator_ = OdomEstimatorFactory::createOdomEstimator(odom_estimator_type_str, this, logger_, diagnostic_manager_, *params_);
 
-    logger_->info("Initializing localizer components...");
-    localizer_->initialize();
+    logger_->info("Initializing odom_estimator components...");
+    odom_estimator_->initialize();
 
     logger_->info("Setting default initial pose...");
     defaultInitPose();
@@ -276,7 +276,7 @@ bool Localization::initialize()
     logger_->info("Registering notification handlers...");
     
     // Register notification callback with pose time tracking
-    localizer_->setNotifyCallback(
+    odom_estimator_->setNotifyCallback(
         [this, last_pose_time](const std::string& event, const std::any& data) {
             // Update last pose time
             *last_pose_time = this->get_clock()->now();
@@ -285,13 +285,13 @@ bool Localization::initialize()
         }
     );
 
-    logger_->info("Localizer successfully started in '{}' mode", localizer_type_str);
+    logger_->info("OdomEstimator successfully started in '{}' mode", odom_estimator_type_str);
     logger_->info("Localization initialization completed successfully");
 
     return true;
 }
 
-void Localization::defaultInitPose()
+void OdomEstimation::defaultInitPose()
 {
     logger_->info("Setting default initial pose (0, 0, 0)");
     
@@ -322,8 +322,8 @@ void Localization::defaultInitPose()
     msg->pose.covariance[7] = 0.1;   // y variance 
     msg->pose.covariance[35] = 0.1;  // yaw variance
     
-    // Process the default initial pose through localizer
-    localizer_->processInitialPose(msg);
+    // Process the default initial pose through odom_estimator
+    odom_estimator_->processInitialPose(msg);
     
     logger_->info("Default initial pose set successfully");
 }
@@ -332,22 +332,22 @@ void Localization::defaultInitPose()
 // Callback Functions
 // -----------------------------------------------------------------------------
 
-void Localization::timerCallback()
+void OdomEstimation::timerCallback()
 {
     auto now = std::chrono::steady_clock::now();
-    // Only publish map->odom transform if localizer is initialized
-    if (!localizer_) {
+    // Only publish map->odom transform if odom_estimator is initialized
+    if (!odom_estimator_) {
         if ((now - transform_last_log_time_) > std::chrono::seconds(1)) {
-            logger_->warn("[timerCallback] Localizer instance is null, cannot publish transform");
+            logger_->warn("[timerCallback] OdomEstimator instance is null, cannot publish transform");
             transform_last_log_time_ = now;
         }
 
         return;
     }
 
-    if(!localizer_->isInitialized() || !localizer_->isMapToOdomInitialized()) {
+    if(!odom_estimator_->isInitialized() || !odom_estimator_->isMapToOdomInitialized()) {
         if ((now - transform_last_log_time_) > std::chrono::seconds(1)) {
-            logger_->warn("[timerCallback] Localizer not initialized yet or Map to Odom transform not initialized yet, skipping transform publish");
+            logger_->warn("[timerCallback] OdomEstimator not initialized yet or Map to Odom transform not initialized yet, skipping transform publish");
             transform_last_log_time_ = now;
         }
 
@@ -364,11 +364,11 @@ void Localization::timerCallback()
     }
     
     auto current_ros_time = this->now();
-    auto current_state = localizer_->getCurrentState();
+    auto current_state = odom_estimator_->getCurrentState();
     
     // If state time is not initialized (0), reset it to current time
     if (current_state.time.nanoseconds() == 0) {
-        localizer_->updateStateTime(current_ros_time);
+        odom_estimator_->updateStateTime(current_ros_time);
         logger_->debug("[timerCallback] Initialized state time to current ROS time: {:.9f}s", current_ros_time.seconds());
         return;
     }
@@ -376,7 +376,7 @@ void Localization::timerCallback()
     auto time_since_last_update = (current_ros_time - current_state.time).seconds() * 1000.0; // Convert to ms
     
     if (time_since_last_update > 50.0) {
-        localizer_->updateStateTime(current_ros_time);
+        odom_estimator_->updateStateTime(current_ros_time);
         logger_->debug("[timerCallback] Updated stale state time: {:.9f}ms since last update, state_time={:.9f}s, current_time={:.9f}s", 
                       time_since_last_update, current_state.time.seconds(), current_ros_time.seconds());
     }
@@ -402,12 +402,12 @@ void Localization::timerCallback()
     std::vector<geometry_msgs::msg::TransformStamped> transforms;
     
     // Get map->odom transform
-    // auto map_to_odom = localizer_->getMapToOdomTransform();
+    // auto map_to_odom = odom_estimator_->getMapToOdomTransform();
     // map_to_odom.header.stamp = this->now();
     // transforms.push_back(map_to_odom);
     
     // Get odom->base_link transform
-    auto odom_to_base_link = localizer_->getOdomToBaselinkTransform();
+    auto odom_to_base_link = odom_estimator_->getOdomToBaselinkTransform();
     odom_to_base_link.header.stamp = this->now();
     transforms.push_back(odom_to_base_link);
     
@@ -417,18 +417,18 @@ void Localization::timerCallback()
     logger_->trace("Published map->odom and odom->base_link transforms via timer");
     
     if (using_landmark_correction_ && landmark_pose_pub_ && landmark_pose_pub_->is_activated() &&
-        localizer_->isLandmarkInitialized())
+        odom_estimator_->isLandmarkInitialized())
     {
-        auto landmark_state = localizer_->getLandmarkState();
+        auto landmark_state = odom_estimator_->getLandmarkState();
         if (landmark_state.has_value()) {
             landmark_pose_pub_->publish(landmark_state.value());
         }
     }
 }
 
-void Localization::landmarkObservationCallback(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg)
+void OdomEstimation::landmarkObservationCallback(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg)
 {
-    if (!localizer_) {
+    if (!odom_estimator_) {
         return;
     }
 
@@ -437,41 +437,41 @@ void Localization::landmarkObservationCallback(const geometry_msgs::msg::PoseWit
         return;
     }
 
-    localizer_->processLandmarkObservation(msg);
+    odom_estimator_->processLandmarkObservation(msg);
 }
 
-void Localization::wheelOdomCallback(const nav_msgs::msg::Odometry::SharedPtr msg)
+void OdomEstimation::wheelOdomCallback(const nav_msgs::msg::Odometry::SharedPtr msg)
 {
     logger_->debug("Odom callback received odom data with timestamp: {:.9f}", 
                   msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9);
-    localizer_->processWheel(msg);
+    odom_estimator_->processWheel(msg);
 }
 
-void Localization::imuOdomCallback(const sensor_msgs::msg::Imu::SharedPtr msg)
+void OdomEstimation::imuOdomCallback(const sensor_msgs::msg::Imu::SharedPtr msg)
 {
     logger_->debug("IMU callback received IMU data with timestamp: {:.9f}", 
                   msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9);
-    localizer_->processImu(msg);
+    odom_estimator_->processImu(msg);
 }
 
-void Localization::poseCommandCallback(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg)
+void OdomEstimation::poseCommandCallback(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg)
 {
-    if (!localizer_) {
-        logger_->warn("Localizer instance is null, cannot publish transform");    
+    if (!odom_estimator_) {
+        logger_->warn("OdomEstimator instance is null, cannot publish transform");    
         return;
     }
 
     logger_->info("Received localization pose command");
-    localizer_->processInitialPose(msg);
+    odom_estimator_->processInitialPose(msg);
 }
 
-void Localization::isForwardCallback(const std_msgs::msg::Bool::SharedPtr msg)
+void OdomEstimation::isForwardCallback(const std_msgs::msg::Bool::SharedPtr msg)
 {
     is_forward_ = msg->data;
     logger_->info("is_forward updated to: {}", is_forward_ ? "true" : "false");
 }
  
-void Localization::landmarkCorrectionEnableCallback(const std_msgs::msg::Bool::SharedPtr msg)
+void OdomEstimation::landmarkCorrectionEnableCallback(const std_msgs::msg::Bool::SharedPtr msg)
 {
     bool new_value = msg->data;
     bool old_value = using_landmark_correction_;
@@ -479,12 +479,12 @@ void Localization::landmarkCorrectionEnableCallback(const std_msgs::msg::Bool::S
     using_landmark_correction_ = new_value;
     logger_->info("landmark correction updated to: {}", using_landmark_correction_ ? "true" : "false");
     
-    if (localizer_ && old_value != new_value) {
+    if (odom_estimator_ && old_value != new_value) {
         if (new_value) {
-            localizer_->enableLandmarkCorrection();
+            odom_estimator_->enableLandmarkCorrection();
             logger_->info("Enabled landmark correction");
         } else {
-            localizer_->disableLandmarkCorrection();
+            odom_estimator_->disableLandmarkCorrection();
             logger_->info("Disabled landmark correction");
         }
     }
@@ -494,7 +494,7 @@ void Localization::landmarkCorrectionEnableCallback(const std_msgs::msg::Bool::S
 // =============================================================================
 // Notification System Implementation
 // =============================================================================
-void Localization::publishObjMarker(const nav_msgs::msg::Odometry& odom)
+void OdomEstimation::publishObjMarker(const nav_msgs::msg::Odometry& odom)
 {
     if (!marker_pub_ || !marker_pub_->is_activated()) {
         return;
@@ -526,7 +526,7 @@ void Localization::publishObjMarker(const nav_msgs::msg::Odometry& odom)
     
     // Set mesh resource - point to the OBJ file in the models directory
     try {
-        std::string package_share_directory = ament_index_cpp::get_package_share_directory("state_estimation");
+        std::string package_share_directory = ament_index_cpp::get_package_share_directory("odom_estimation");
         marker.mesh_resource = "file://" + package_share_directory + "/models/gl_shell.obj";
         
         // MTL file should be automatically loaded if it exists alongside the OBJ file
@@ -542,9 +542,9 @@ void Localization::publishObjMarker(const nav_msgs::msg::Odometry& odom)
     }
 }
 
-void Localization::handleNotification(const std::string& event_name, const std::any& data)
+void OdomEstimation::handleNotification(const std::string& event_name, const std::any& data)
 {
-    logger_->debug("[handleNotification] Received localizer notification: {}", event_name);
+    logger_->debug("[handleNotification] Received odom_estimator notification: {}", event_name);
     nav_msgs::msg::Odometry odom;
     try {
         if (event_name == WHEEL_PROCESSED_EVENT
@@ -562,12 +562,12 @@ void Localization::handleNotification(const std::string& event_name, const std::
             return;
         }
         
-        auto state = localizer_->getCurrentState();
+        auto state = odom_estimator_->getCurrentState();
         logger_->debug("[handleNotification] updated robot pose: x={:.3f}, y={:.3f}, yaw={:.3f}°", 
                       state.mu(0), state.mu(1), state.mu(2) * 180.0 / M_PI);
 
     } catch (const std::exception& e) {
-        logger_->error("Error handling localizer notification '{}': {}", event_name, e.what());
+        logger_->error("Error handling odom_estimator notification '{}': {}", event_name, e.what());
     }
 
     // Publish the updated pose
@@ -580,5 +580,5 @@ void Localization::handleNotification(const std::string& event_name, const std::
 }
 
 
-} // namespace localization
+} // namespace odom_estimation
 } // namespace gole

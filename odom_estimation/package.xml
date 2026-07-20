@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>state_estimation</name>
+  <name>odom_estimation</name>
   <version>0.0.0</version>
-  <description>A flexible localization package with factory pattern support for different localization algorithms</description>
+  <description>Odometry estimation package with factory pattern support for different estimation algorithms</description>
   <maintainer email="gwontaeyang@users.noreply.github.com">gwontaeyang</maintainer>
   <license>Apache-2.0</license>
 
