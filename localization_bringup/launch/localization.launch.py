@@ -32,7 +32,17 @@ def launch_setup(context, *args, **kwargs):
         create_package_launch(
             "odom_estimation",
             "odom_estimation.launch.py",
-            {"use_sim_time": use_sim_time},
+            {
+                "use_sim_time": use_sim_time,
+                "load_initial_gyro_bias": LaunchConfiguration("load_initial_gyro_bias"),
+                "gyro_bias_yaml_path": LaunchConfiguration("gyro_bias_yaml_path"),
+                "allow_initial_gyro_bias_fallback": LaunchConfiguration(
+                    "allow_initial_gyro_bias_fallback"
+                ),
+                "gyro_bias_fallback_yaml_path": LaunchConfiguration(
+                    "gyro_bias_fallback_yaml_path"
+                ),
+            },
         ),
     ]
 
@@ -72,6 +82,30 @@ def generate_launch_description():
         default_value="blank_map.yaml",
         description="Map filename to load from $HOME/.ros/db/maps for AMCL.",
     )
+    load_initial_gyro_bias_arg = DeclareLaunchArgument(
+        "load_initial_gyro_bias",
+        default_value="true",
+        description="Seed odom estimation gyro z-bias from a calibration YAML.",
+    )
+    gyro_bias_yaml_path_arg = DeclareLaunchArgument(
+        "gyro_bias_yaml_path",
+        default_value="~/.ros/imu_bias_manager/active.yaml",
+        description="IMU calibration YAML path.",
+    )
+    allow_initial_gyro_bias_fallback_arg = DeclareLaunchArgument(
+        "allow_initial_gyro_bias_fallback",
+        default_value="true",
+        description="Use fallback YAML only when the active YAML does not exist.",
+    )
+    gyro_bias_fallback_yaml_path_arg = DeclareLaunchArgument(
+        "gyro_bias_fallback_yaml_path",
+        default_value=os.path.join(
+            get_package_share_directory("imu_tools"),
+            "config",
+            "imu_localization_bias_seed.yaml",
+        ),
+        description="Validated startup fallback calibration YAML.",
+    )
 
     use_sim_time = LaunchConfiguration("use_sim_time")
     localization_bringup_node = Node(
@@ -95,6 +129,10 @@ def generate_launch_description():
             type_arg,
             mode_arg,
             map_arg,
+            load_initial_gyro_bias_arg,
+            gyro_bias_yaml_path_arg,
+            allow_initial_gyro_bias_fallback_arg,
+            gyro_bias_fallback_yaml_path_arg,
             localization_bringup_node,
             OpaqueFunction(function=launch_setup),
         ]

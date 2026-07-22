@@ -16,6 +16,14 @@ struct Params {
     bool use_sim_time = false;
     bool is_forward = true;
     bool using_landmark_correction = false;
+
+    // Optional offline gyro calibration used to seed the EKF bias state.
+    bool load_initial_gyro_bias = false;
+    std::string gyro_bias_yaml_path = "~/.ros/imu_calibration.yaml";
+    bool allow_initial_gyro_bias_fallback = false;
+    std::string gyro_bias_fallback_yaml_path;
+    double max_initial_gyro_bias_abs = 0.05;
+    double initial_gyro_bias_z = 0.0;
     
     // Add more parameter groups here as needed
     // e.g., EKF parameters, AMCL parameters, etc.
@@ -128,7 +136,13 @@ struct State
     }
 
     // Helper function to set state from initial pose message
-    void setPose(double x, double y, const std::array<double, 4>& quat, double vx, double vyaw)
+    void setPose(
+        double x,
+        double y,
+        const std::array<double, 4>& quat,
+        double vx,
+        double vyaw,
+        double gyro_bias = 0.0)
     {
         // Only update robot state, keep landmark state unchanged
         mu(0) = x;
@@ -136,7 +150,7 @@ struct State
         mu(2) = quat2YawRad(quat);
         mu(3) = vx; // velocity
         mu(4) = vyaw; // angular velocity
-        mu(5) = 0.0; // gyro bias
+        mu(5) = gyro_bias;
         // Landmark state remains as initialized.
     }
 

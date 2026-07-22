@@ -4,7 +4,10 @@
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "rmw/qos_profiles.h"
 
+#include <filesystem>
+
 #include "odom_estimation/odom_estimation.hpp"
+#include "odom_estimation/imu_bias_config.hpp"
 #include "odom_estimation/odom_estimator_factory.hpp"
 
 namespace gole {
@@ -61,6 +64,7 @@ OdomEstimation::on_activate(const rclcpp_lifecycle::State & /*state*/)
     pose_pub_->on_activate();
     marker_pub_->on_activate();
     landmark_pose_pub_->on_activate();
+    gyro_bias_pub_->on_activate();
     
     // Activate diagnostic manager
     if (diagnostic_manager_) {
@@ -92,6 +96,7 @@ OdomEstimation::on_deactivate(const rclcpp_lifecycle::State & /*state*/)
     pose_pub_->on_deactivate();
     marker_pub_->on_deactivate();
     landmark_pose_pub_->on_deactivate();
+    gyro_bias_pub_->on_deactivate();
     
     // Deactivate diagnostic manager
     if (diagnostic_manager_) {
@@ -149,6 +154,45 @@ void OdomEstimation::setupParameters()
     params_->is_forward = true;  // Will be updated by topic callback
     params_->using_landmark_correction = false;  // Will be updated by topic callback
 
+    params_->load_initial_gyro_bias = declare_parameter("load_initial_gyro_bias", false);
+    params_->gyro_bias_yaml_path = declare_parameter(
+        "gyro_bias_yaml_path", std::string("~/.ros/imu_calibration.yaml"));
+    params_->allow_initial_gyro_bias_fallback = declare_parameter(
+        "allow_initial_gyro_bias_fallback", false);
+    params_->gyro_bias_fallback_yaml_path = declare_parameter(
+        "gyro_bias_fallback_yaml_path", std::string(""));
+    params_->max_initial_gyro_bias_abs = declare_parameter(
+        "max_initial_gyro_bias_abs", 0.05);
+
+    if (params_->load_initial_gyro_bias) {
+        std::string selected_path = params_->gyro_bias_yaml_path;
+        const std::string resolved_primary = expandUserPath(selected_path);
+        if (!std::filesystem::exists(resolved_primary) &&
+            params_->allow_initial_gyro_bias_fallback &&
+            !params_->gyro_bias_fallback_yaml_path.empty()) {
+            const std::string resolved_fallback = expandUserPath(
+                params_->gyro_bias_fallback_yaml_path);
+            if (std::filesystem::exists(resolved_fallback)) {
+                selected_path = params_->gyro_bias_fallback_yaml_path;
+                logger_->warn(
+                    "Active gyro bias YAML '{}' is absent; using startup fallback '{}'",
+                    resolved_primary,
+                    resolved_fallback);
+            }
+        }
+        const auto gyro_bias = loadGyroBiasCalibration(
+            selected_path,
+            params_->max_initial_gyro_bias_abs);
+        params_->initial_gyro_bias_z = gyro_bias[2];
+        logger_->info(
+            "Initial gyro bias enabled: z={:.9f} rad/s ({:.6f} deg/s), source='{}'",
+            params_->initial_gyro_bias_z,
+            params_->initial_gyro_bias_z * 180.0 / M_PI,
+            expandUserPath(selected_path));
+    } else {
+        logger_->info("Initial gyro bias YAML loading disabled; EKF bias starts at 0 rad/s");
+    }
+
     landmark_correction_enable_topic_ = declare_parameter(
         "landmark_correction_enable_topic",
         std::string("task_manager_node/using_vmarker_localization"));
@@ -173,6 +217,8 @@ void OdomEstimation::setupPublishers()
     marker_pub_ = create_publisher<visualization_msgs::msg::Marker>("~/robot_marker", rclcpp::QoS(10));
     
     landmark_pose_pub_ = create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>("~/landmark_pose", rclcpp::QoS(10));
+    gyro_bias_pub_ = create_publisher<geometry_msgs::msg::Vector3Stamped>(
+        "~/gyro_bias", rclcpp::QoS(10));
 
     logger_->info("Publishers created");
 }
@@ -573,6 +619,14 @@ void OdomEstimation::handleNotification(const std::string& event_name, const std
     // Publish the updated pose
     if (pose_pub_ && pose_pub_->is_activated()) {
         pose_pub_->publish(odom);
+
+        if (gyro_bias_pub_ && gyro_bias_pub_->is_activated()) {
+            const auto state = odom_estimator_->getCurrentState();
+            geometry_msgs::msg::Vector3Stamped gyro_bias;
+            gyro_bias.header = odom.header;
+            gyro_bias.vector.z = state.mu(5);
+            gyro_bias_pub_->publish(gyro_bias);
+        }
         
         // Publish OBJ marker at robot pose
         publishObjMarker(odom);

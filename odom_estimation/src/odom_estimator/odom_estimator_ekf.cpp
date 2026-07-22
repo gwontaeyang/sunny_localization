@@ -18,8 +18,12 @@ OdomEstimatorEKF::OdomEstimatorEKF(rclcpp_lifecycle::LifecycleNode* node,
 void OdomEstimatorEKF::findInitPose(const geometry_msgs::msg::PoseWithCovarianceStamped& initial_guess)
 {
     logger_->info("Finding initial pose using observation data...");
+    double applied_gyro_bias = params_.initial_gyro_bias_z;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
+        if (is_init_.load()) {
+            applied_gyro_bias = current_state_.mu(5);
+        }
         current_state_.setPose(
             initial_guess.pose.pose.position.x,
             initial_guess.pose.pose.position.y,
@@ -30,7 +34,8 @@ void OdomEstimatorEKF::findInitPose(const geometry_msgs::msg::PoseWithCovariance
                 initial_guess.pose.pose.orientation.z
             },
             0.0,    // initial velocity
-            0.0     // initial angular velocity
+            0.0,    // initial angular velocity
+            applied_gyro_bias
         );
         // Initialize covariance matrix with appropriate initial uncertainty
         // Reset covariance to reflect initial pose uncertainty for full state (robot + landmark)
@@ -92,10 +97,11 @@ void OdomEstimatorEKF::findInitPose(const geometry_msgs::msg::PoseWithCovariance
 
     Eigen::Matrix3d R = angle.toRotationMatrix();
     double yaw = std::atan2(R(1, 0), R(0, 0));
-    logger_->info("Initial pose set at x={:.3f}, y={:.3f}, yaw={:.3f}°",
+    logger_->info("Initial pose set at x={:.3f}, y={:.3f}, yaw={:.3f}°, gyro_bias_z={:.6f}°/s",
                   initial_guess.pose.pose.position.x,
                   initial_guess.pose.pose.position.y,
-                  yaw * 180.0 / M_PI);
+                  yaw * 180.0 / M_PI,
+                  applied_gyro_bias * 180.0 / M_PI);
 }
 
 void OdomEstimatorEKF::processInitialPose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr pose)

@@ -7,6 +7,14 @@ odom_estimation_node:
     landmark_correction_enable_topic: "task_manager_node/using_vmarker_localization"
     landmark_observation_topic: "~/landmark_observation"
     log_level: "info" # Options: trace, debug, info, warn, err, critical, off
+
+    # Seed only the EKF gyro z-bias state. Raw /imu/data remains unchanged and
+    # the stationary online bias update continues from this initial value.
+    load_initial_gyro_bias: false
+    gyro_bias_yaml_path: "~/.ros/imu_calibration.yaml"
+    allow_initial_gyro_bias_fallback: false
+    gyro_bias_fallback_yaml_path: ""
+    max_initial_gyro_bias_abs: 0.05  # rad/s; configuration sanity limit
     
     # Robot pose publishing timeout (in milliseconds)
     robot_pose_timeout: 100.0  # Default: 100ms timeout for pose publishing check

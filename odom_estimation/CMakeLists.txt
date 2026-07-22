@@ -29,6 +29,7 @@ find_package(message_filters REQUIRED)
 find_package(gole_utility REQUIRED)
 find_package(gole_interfaces REQUIRED)
 find_package(pcl_conversions REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 # Find all cpp files in src directory
 file(GLOB_RECURSE CPP_SRC
@@ -64,7 +65,20 @@ target_link_libraries(${PROJECT_NAME}_node
   gole_utility::gole_logger
   gole_utility::gole_diagnostic
   gole_utility::gole_kinematics
+  yaml-cpp
 )
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+
+  ament_add_gtest(test_imu_bias_config
+    test/test_imu_bias_config.cpp
+  )
+  target_include_directories(test_imu_bias_config PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+  target_link_libraries(test_imu_bias_config yaml-cpp)
+endif()
 
 # Install executables
 install(TARGETS ${PROJECT_NAME}_node
