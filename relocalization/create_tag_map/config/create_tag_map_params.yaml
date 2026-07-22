@@ -1,0 +1,15 @@
+create_tag_map_node:
+  ros__parameters:
+    tag_topic: "/tag_array"
+    map_name: "generated_tag_map"
+    output_json: "~/.ros/tag_maps/generated_tag_map.json"
+    output_yaml: "~/.ros/db/generated_tag_map.yaml"
+    save_yaml_for_tag_map_db: true
+    overwrite_existing: false
+    append_existing: true
+    save_raw_samples: true
+    target_frame: "odom"
+    use_tf_target_frame: true
+    min_samples_per_tag: 1
+    capture_duration_sec: 0.0
+    autosave_period_sec: 5.0

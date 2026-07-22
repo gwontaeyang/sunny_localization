@@ -1,0 +1,18 @@
+tag_relocalization_node:
+  ros__parameters:
+    tag_map_json: "~/.ros/tag_maps/generated_tag_map.json"
+    tag_topic: "/tag_array"
+    pose_topic: "/odom_estimation_node/set_pose"
+    initialpose_topic: ""
+    debug_pose_topic: "~/estimated_pose"
+    map_frame_id: "odom"
+    base_frame_id: "base_link"
+    planar_mode: true
+    publish_debug_pose: true
+    require_base_frame_observation: true
+    relocalize_period_sec: 2.0
+    min_map_samples: 1
+    max_map_position_stddev: 0.20
+    max_detection_distance: 5.0
+    position_covariance: 0.05
+    yaw_covariance: 0.05
