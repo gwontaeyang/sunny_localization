@@ -32,6 +32,12 @@ install(DIRECTORY config/
   DESTINATION share/${PROJECT_NAME}/config
 )
 
+install(DIRECTORY scripts/
+  DESTINATION share/${PROJECT_NAME}/scripts
+  FILES_MATCHING PATTERN "*.py"
+  PATTERN "__pycache__" EXCLUDE
+)
+
 install(TARGETS
   localization_bringup_node
   DESTINATION lib/${PROJECT_NAME}
