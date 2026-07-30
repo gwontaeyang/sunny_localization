@@ -3,7 +3,7 @@
 import os
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch_ros.actions import LifecycleNode, Node
+from launch_ros.actions import LifecycleNode
 from launch_ros.parameter_descriptions import ParameterValue
 from ament_index_python.packages import get_package_share_directory
 from launch.substitutions import LaunchConfiguration
@@ -56,22 +56,6 @@ def generate_launch_description():
         gyro_bias_yaml_path_arg,
         allow_initial_gyro_bias_fallback_arg,
         gyro_bias_fallback_yaml_path_arg,
-        Node(
-            package="tf2_ros",
-            executable="static_transform_publisher",
-            name="base_footprint_to_base_link_tf",
-            arguments=[
-                "--x", "0",
-                "--y", "0",
-                "--z", "0",
-                "--roll", "0",
-                "--pitch", "0",
-                "--yaw", "0",
-                "--frame-id", "base_footprint",
-                "--child-frame-id", "base_link",
-            ],
-            output="screen",
-        ),
         LifecycleNode(
             package='odom_estimation',
             executable='odom_estimation_node',

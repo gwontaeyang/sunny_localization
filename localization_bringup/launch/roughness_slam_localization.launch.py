@@ -122,23 +122,6 @@ def generate_launch_description():
         ]
     )
 
-    base_footprint_tf = Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        name='base_footprint_to_base_link_tf',
-        arguments=[
-            '--x', '0',
-            '--y', '0',
-            '--z', '0',
-            '--roll', '0',
-            '--pitch', '0',
-            '--yaw', '0',
-            '--frame-id', 'base_footprint',
-            '--child-frame-id', 'base_link',
-        ],
-        output='screen',
-    )
-
     return LaunchDescription([
         declare_use_sim_time,
         declare_map_file,
@@ -146,7 +129,6 @@ def generate_launch_description():
         declare_amcl_params_file,
         declare_autostart,
         declare_amcl_guard_output,
-        base_footprint_tf,
         amcl_guard_node,
         amcl_node,
         map_server_node,

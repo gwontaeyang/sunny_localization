@@ -54,7 +54,7 @@ amcl:
 
     # 오도메트리 프레임
     odom_frame_id: "odom"
-    base_frame_id: "base_footprint"
+    base_frame_id: "base_link"
     global_frame_id: "map"
 
     # 기타 설정

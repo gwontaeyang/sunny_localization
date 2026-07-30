@@ -10,11 +10,11 @@ amcl:
     scan_topic: "/scan_amcl"
 
     # Frame / TF configuration
-    # AMCL publishes map -> odom; external odometry publishes odom -> base_footprint.
+    # AMCL publishes map -> odom; external odometry publishes odom -> base_link.
     # transform_tolerance는 AMCL이 publish하는 map -> odom TF를 미래 시점까지 유효하게 두는 시간이다.
     global_frame_id: "map"
     odom_frame_id: "odom"
-    base_frame_id: "base_footprint"
+    base_frame_id: "base_link"
     tf_broadcast: true
     transform_tolerance: 1.0
 

@@ -2,7 +2,7 @@ odom_estimation_node:
   ros__parameters:
     map_frame_id: "map"
     odom_frame_id: "odom"
-    base_link_frame_id: "base_footprint"
+    base_link_frame_id: "base_link"
     pose_command_topic: "~/set_pose"
     landmark_correction_enable_topic: "task_manager_node/using_vmarker_localization"
     landmark_observation_topic: "~/landmark_observation"

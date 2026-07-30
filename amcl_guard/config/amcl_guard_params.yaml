@@ -6,7 +6,7 @@ amcl_guard:
     output_scan_topic: "/scan_amcl"
     amcl_pose_topic: "/amcl_pose"
     odom_frame_id: "odom"
-    base_frame_id: "base_footprint"
+    base_frame_id: "base_link"
     require_good_pose: true
     max_pose_age: 3.0
     allow_stale_pose_when_stationary: true
