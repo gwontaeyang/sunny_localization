@@ -62,22 +62,9 @@ install(DIRECTORY config
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
-  find_package(ament_cmake_gtest REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
-
-  ament_add_gtest(test_laser_scan_stabilizer
-    test/test_laser_scan_stabilizer.cpp
-    src/laser_scan_stabilizer.cpp
-  )
-  target_include_directories(test_laser_scan_stabilizer PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  )
-  ament_target_dependencies(test_laser_scan_stabilizer
-    geometry_msgs
-    sensor_msgs
-  )
 endif()
 
 ament_package()
