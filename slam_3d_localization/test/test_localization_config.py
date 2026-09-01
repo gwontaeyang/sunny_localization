@@ -30,6 +30,8 @@ def test_default_config_has_safe_registration_gates():
     assert isinstance(params["cloud_subscription_reliable"], bool)
     assert params["cloud_subscription_depth"] > 0
     assert params["publish_tf"] is True
+    assert params["publish_global_map"] is True
+    assert params["global_map_topic"] == "/localization_3d/global_map"
     assert params["fitness_threshold"] > 0.0
     assert 0.0 < params["min_registration_inlier_ratio"] <= 1.0
     assert params["max_registration_inlier_rmse_m"] > 0.0
@@ -175,12 +177,13 @@ def test_indoor_xt32_no_wheel_replay_profile_matches_verified_contract():
     }
 
 
-def test_launch_requires_map_path_and_does_not_start_hardware():
+def test_launch_defaults_to_classified_rgb_map_and_does_not_start_hardware():
     launch_text = (
         PACKAGE_ROOT / "launch" / "slam_3d_localization.launch.py"
     ).read_text()
 
-    assert 'DeclareLaunchArgument("map_path")' in launch_text
+    assert '"gangnam_floor_person_filtered_nav_classified_rgb.pcd"' in launch_text
+    assert 'EnvironmentVariable("HOME")' in launch_text
     assert '"map_path": LaunchConfiguration("map_path")' in launch_text
     assert "hesai" not in launch_text.lower()
 
@@ -207,6 +210,33 @@ def test_node_uses_two_threads_and_a_dedicated_odom_callback_group():
         "odom_subscription_options.callback_group = odom_callback_group_;"
         in implementation
     )
+
+
+def test_avs_profile_uses_robot_topics_and_classified_map():
+    data = yaml.safe_load(
+        (PACKAGE_ROOT / "config" / "slam_3d_localization_avs.yaml").read_text()
+    )
+    params = data["slam_3d_localizer"]["ros__parameters"]
+
+    assert params["map_path"].endswith(
+        "/gangnam_floor_person_filtered_nav_classified_rgb.pcd"
+    )
+    assert params["cloud_topic"] == "/lidar/points_merged"
+    assert params["odom_topic"] == "/odom"
+    assert params["global_map_topic"] == "/localization_3d/global_map"
+    assert params["publish_global_map"] is True
+
+
+def test_avs_rviz_launch_starts_only_localization_and_visualization():
+    launch_text = (
+        PACKAGE_ROOT / "launch" / "slam_3d_localization_avs_rviz.launch.py"
+    ).read_text()
+
+    assert 'package="slam_3d_localization"' in launch_text
+    assert 'package="rviz2"' in launch_text
+    assert '"slam_3d_localization_avs.yaml"' in launch_text
+    assert '"slam_3d_localization_avs.rviz"' in launch_text
+    assert "hesai" not in launch_text.lower()
 
 
 def test_amcl_compatible_nomotion_update_contract_is_present():

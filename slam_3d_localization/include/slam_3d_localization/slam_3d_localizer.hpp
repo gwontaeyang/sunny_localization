@@ -12,6 +12,7 @@
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
+#include <pcl/PCLPointCloud2.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <rclcpp/rclcpp.hpp>
@@ -70,6 +71,7 @@ private:
   };
 
   void loadMap();
+  void publishGlobalMap();
   void initialPoseCallback(
     const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr message);
   void odomCallback(const nav_msgs::msg::Odometry::SharedPtr message);
@@ -114,12 +116,14 @@ private:
   std::string pose_topic_;
   std::string aligned_cloud_topic_;
   std::string local_map_topic_;
+  std::string global_map_topic_;
   std::string diagnostics_topic_;
   std::string registration_method_{"gicp"};
   bool cloud_subscription_reliable_{false};
   int cloud_subscription_depth_{5};
   bool publish_tf_{true};
   bool publish_local_map_{true};
+  bool publish_global_map_{true};
   bool input_scan_preprocessed_{false};
   bool map_already_voxelized_{false};
   bool crop_box_enabled_{false};
@@ -163,6 +167,7 @@ private:
   ::gole::slam_3d_core::VoxelSurfelRegistration::Config surfel_config_{};
 
   CloudT::Ptr global_map_{new CloudT};
+  pcl::PCLPointCloud2 visualization_map_;
   // Lock order: state_mutex_ may be held before either specialized mutex.
   // The odometry callback never holds a specialized mutex while acquiring
   // state_mutex_, and never holds odom_buffer_mutex_ while acquiring
@@ -207,6 +212,7 @@ private:
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pose_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr aligned_cloud_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr local_map_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr global_map_pub_;
   rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_pub_;
 };
 

@@ -12,6 +12,7 @@ slam_3d_localizer:
     pose_topic: /localization_3d/odom
     aligned_cloud_topic: /localization_3d/aligned_points
     local_map_topic: /localization_3d/local_map
+    global_map_topic: /localization_3d/global_map
     diagnostics_topic: /localization_3d/diagnostics
     registration_method: gicp
     cloud_subscription_reliable: false
@@ -20,6 +21,8 @@ slam_3d_localizer:
     # cached map -> odom transform at each strictly newer odometry stamp.
     publish_tf: true
     publish_local_map: true
+    # Publish the original PCD fields (including RGB) once with transient-local QoS.
+    publish_global_map: true
     input_scan_preprocessed: false
     map_already_voxelized: false
     crop_box_enabled: false

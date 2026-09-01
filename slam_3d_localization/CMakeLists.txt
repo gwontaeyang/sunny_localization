@@ -62,7 +62,7 @@ install(TARGETS slam_3d_localizer slam_3d_localizer_node
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 install(DIRECTORY include/ DESTINATION include)
-install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY config launch rviz DESTINATION share/${PROJECT_NAME})
 install(PROGRAMS
   scripts/estimate_imu_open_loop.py
   scripts/publish_localization_inputs.py

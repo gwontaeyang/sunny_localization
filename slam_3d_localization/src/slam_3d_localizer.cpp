@@ -84,6 +84,8 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
     "aligned_cloud_topic", "/localization_3d/aligned_points");
   local_map_topic_ = declare_parameter<std::string>(
     "local_map_topic", "/localization_3d/local_map");
+  global_map_topic_ = declare_parameter<std::string>(
+    "global_map_topic", "/localization_3d/global_map");
   diagnostics_topic_ = declare_parameter<std::string>(
     "diagnostics_topic", "/localization_3d/diagnostics");
   registration_method_ = declare_parameter<std::string>(
@@ -94,6 +96,7 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
     "cloud_subscription_depth", cloud_subscription_depth_);
   publish_tf_ = declare_parameter<bool>("publish_tf", true);
   publish_local_map_ = declare_parameter<bool>("publish_local_map", true);
+  publish_global_map_ = declare_parameter<bool>("publish_global_map", true);
   input_scan_preprocessed_ = declare_parameter<bool>(
     "input_scan_preprocessed", input_scan_preprocessed_);
   map_already_voxelized_ = declare_parameter<bool>(
@@ -280,6 +283,8 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
     create_publisher<sensor_msgs::msg::PointCloud2>(aligned_cloud_topic_, rclcpp::SensorDataQoS());
   local_map_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
     local_map_topic_, rclcpp::QoS(1).transient_local().reliable());
+  global_map_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
+    global_map_topic_, rclcpp::QoS(1).transient_local().reliable());
   diagnostics_pub_ =
     create_publisher<diagnostic_msgs::msg::DiagnosticArray>(diagnostics_topic_, 10);
 
@@ -310,6 +315,10 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
       &Slam3dLocalizer::noMotionUpdateCallback, this,
       std::placeholders::_1, std::placeholders::_2));
 
+  if (publish_global_map_) {
+    publishGlobalMap();
+  }
+
   RCLCPP_INFO(
     get_logger(),
     "Loaded %zu map points from %s; registration=%s, preprocessed_input=%s, "
@@ -323,9 +332,10 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
 void Slam3dLocalizer::loadMap()
 {
   CloudT raw;
-  if (pcl::io::loadPCDFile<PointT>(map_path_, raw) < 0) {
+  if (pcl::io::loadPCDFile(map_path_, visualization_map_) < 0) {
     throw std::runtime_error("failed to load PCD map: " + map_path_);
   }
+  pcl::fromPCLPointCloud2(visualization_map_, raw);
   std::vector<int> valid_indices;
   pcl::removeNaNFromPointCloud(raw, raw, valid_indices);
   global_map_->clear();
@@ -340,6 +350,18 @@ void Slam3dLocalizer::loadMap()
   if (global_map_->size() < static_cast<std::size_t>(min_local_map_points_)) {
     throw std::runtime_error("PCD map has too few finite points after downsampling");
   }
+}
+
+void Slam3dLocalizer::publishGlobalMap()
+{
+  sensor_msgs::msg::PointCloud2 message;
+  pcl_conversions::fromPCL(visualization_map_, message);
+  message.header.stamp = now();
+  message.header.frame_id = map_frame_;
+  global_map_pub_->publish(message);
+  RCLCPP_INFO(
+    get_logger(), "Published %u map points with original PCD fields on %s",
+    visualization_map_.width * visualization_map_.height, global_map_topic_.c_str());
 }
 
 void Slam3dLocalizer::initialPoseCallback(
