@@ -3,6 +3,7 @@
 #define SLAM_3D_LOCALIZATION__SLAM_3D_LOCALIZER_HPP_
 
 #include "slam_3d_localization/constant_velocity_predictor.hpp"
+#include "slam_3d_localization/map_odom_transform_cache.hpp"
 #include "slam_3d_localization/odom_pose_buffer.hpp"
 #include "slam_3d_core/voxel_surfel_registration.hpp"
 
@@ -81,8 +82,10 @@ private:
     const CloudT & scan, const CloudT & local_map,
     const Eigen::Isometry3d & prediction) const;
   void publishResult(
-    const Eigen::Isometry3d & map_T_base, const Eigen::Isometry3d * odom_T_base,
-    const CloudT & scan_base, const rclcpp::Time & stamp, double fitness);
+    const Eigen::Isometry3d & map_T_base, const CloudT & scan_base,
+    const rclcpp::Time & stamp, double fitness);
+  void publishMapToOdomTransform(
+    const Eigen::Isometry3d & map_T_odom, const rclcpp::Time & stamp);
   void publishDiagnostic(
     const rclcpp::Time & stamp, int level, const std::string & state,
     const std::string & reason, double fitness, std::size_t scan_points,
@@ -171,6 +174,7 @@ private:
   Eigen::Isometry3d map_T_base_{Eigen::Isometry3d::Identity()};
   Eigen::Isometry3d accepted_odom_T_base_{Eigen::Isometry3d::Identity()};
   Eigen::Isometry3d processed_odom_T_base_{Eigen::Isometry3d::Identity()};
+  MapOdomTransformCache map_odom_transform_cache_;
   OdomPoseBuffer odom_buffer_{
     odom_buffer_duration_s_, odom_max_interpolation_gap_s_,
     odom_max_nearest_age_s_, odom_timestamp_reset_threshold_s_};

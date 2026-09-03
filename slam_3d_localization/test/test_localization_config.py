@@ -27,6 +27,7 @@ def test_default_config_has_safe_registration_gates():
     assert params["local_map_radius_m"] > params["max_correspondence_m"]
     assert isinstance(params["cloud_subscription_reliable"], bool)
     assert params["cloud_subscription_depth"] > 0
+    assert params["publish_tf"] is True
     assert params["fitness_threshold"] > 0.0
     assert 0.0 < params["min_registration_inlier_ratio"] <= 1.0
     assert params["max_registration_inlier_rmse_m"] > 0.0
@@ -235,3 +236,68 @@ def test_constant_velocity_prediction_is_opt_in_and_auditable():
     assert 'keyValue("prediction_source"' in implementation
     assert '"constant_velocity_status"' in implementation
     assert '"constant_velocity_translation_clamped"' in implementation
+
+
+def test_map_to_odom_tf_is_anchored_by_localization_and_published_only_from_odom():
+    implementation = (
+        PACKAGE_ROOT / "src" / "slam_3d_localizer.cpp"
+    ).read_text()
+
+    odom_callback_start = implementation.index("void Slam3dLocalizer::odomCallback(")
+    odom_callback_end = implementation.index(
+        "void Slam3dLocalizer::noMotionUpdateCallback(", odom_callback_start
+    )
+    odom_callback = implementation[odom_callback_start:odom_callback_end]
+    result_publisher_start = implementation.index(
+        "void Slam3dLocalizer::publishResult("
+    )
+    tf_publisher_start = implementation.index(
+        "void Slam3dLocalizer::publishMapToOdomTransform(", result_publisher_start
+    )
+    result_publisher = implementation[result_publisher_start:tf_publisher_start]
+
+    assert (
+        "map_odom_transform_cache_.reanchor(map_T_base_, odom_lookup.odom_T_base)"
+        in implementation
+    )
+    assert "map_odom_transform_cache_.takeForOdomStamp(stamp.nanoseconds())" in odom_callback
+    assert "publishMapToOdomTransform(*map_T_odom, stamp);" in odom_callback
+    assert "publish_tf_" in odom_callback
+    assert "sendTransform" not in result_publisher
+    assert implementation.count("tf_broadcaster_->sendTransform(transform);") == 1
+
+    reanchor = implementation.index(
+        "map_odom_transform_cache_.reanchor(map_T_base_, odom_lookup.odom_T_base)"
+    )
+    unsynchronized_accept = implementation.index("} else {", reanchor)
+    predictor_update = implementation.index(
+        "if (use_constant_velocity_prediction_) {", unsynchronized_accept
+    )
+    assert "map_odom_transform_cache_.invalidate();" not in implementation[
+        unsynchronized_accept:predictor_update
+    ]
+
+
+def test_map_to_odom_tf_cache_is_invalidated_on_pose_and_timestamp_epoch_resets():
+    implementation = (
+        PACKAGE_ROOT / "src" / "slam_3d_localizer.cpp"
+    ).read_text()
+
+    initial_pose_start = implementation.index(
+        "void Slam3dLocalizer::initialPoseCallback("
+    )
+    odom_start = implementation.index(
+        "void Slam3dLocalizer::odomCallback(", initial_pose_start
+    )
+    cloud_start = implementation.index("void Slam3dLocalizer::cloudCallback(")
+    cloud_reset = implementation.index("if (cloud_timestamp_reset) {", cloud_start)
+
+    assert "map_odom_transform_cache_.invalidate();" in implementation[
+        initial_pose_start:odom_start
+    ]
+    assert "map_odom_transform_cache_.invalidate();" in implementation[
+        odom_start:cloud_start
+    ]
+    assert "map_odom_transform_cache_.invalidate();" in implementation[
+        cloud_reset : cloud_reset + 700
+    ]

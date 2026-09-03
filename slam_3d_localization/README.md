@@ -13,8 +13,9 @@ PointCloud2 -> TF to base_link -> range/z/optional robot crop -> voxel filter
 timestamp-matched wheel/filtered odom delta -> registration initial guess
 local scan + local map -> GICP (default) or voxel-surfel -> acceptance gates
   -> /localization_3d/odom
-  -> map -> odom TF
+  -> cache map -> odom correction
   -> aligned scan, local map, diagnostics
+strictly newer valid odometry -> cached map -> odom TF at its stamp
 ```
 
 The node starts in `uninitialized`. Set a 6-DoF pose in `map` using
@@ -244,7 +245,8 @@ samples are interpolated only when their span is at most
 Future-only samples are never used as a pose hold. A timestamp rewind larger
 than `odom_timestamp_reset_threshold_s` clears temporal anchors. When no valid
 lookup exists, scan-to-map matching continues without an odometry prediction,
-`map -> odom` is not published for that cloud, and diagnostics report
+an accepted scan leaves the last synchronized `map -> odom` correction in
+place because it cannot safely replace it, and diagnostics report
 `odom_sync_valid=false`.
 
 For wheel-less profiles, `use_constant_velocity_prediction=true` opts into the
@@ -293,12 +295,25 @@ Evidence root:
 
 ## TF ownership
 
-When odometry is available and `publish_tf=true`, this node publishes
-`map -> odom`:
+When odometry is available and `publish_tf=true`, an accepted localization with
+synchronized odometry caches `map -> odom`:
 
 ```text
 map_T_odom = map_T_base(localized) * inverse(odom_T_base)
 ```
+
+The cloud callback only updates this cache; it does not broadcast TF. Starting
+with the next valid odometry callback, the node broadcasts one cached transform
+for each strictly newer odometry header stamp. Duplicate and slightly
+out-of-order stamps are suppressed so TF time never repeats or moves backward.
+Reanchoring updates the transform but deliberately preserves the last emitted
+stamp, preventing queued stale odometry from reopening the gate. This keeps TF
+cadence aligned with the owner of `odom -> base_link` while scan matching runs
+at its own rate. Before the first accepted synchronized localization, no
+`map -> odom` TF is published. A new initial pose, an odometry timestamp rewind,
+or a cloud timestamp epoch reset invalidates the cache and resets its stamp gate
+until another accepted synchronized localization reanchors it.
+`publish_tf=false` suppresses every broadcast.
 
 The odometry source remains responsible for `odom -> base_link`. Do not enable
 another `map -> odom` publisher at the same time.

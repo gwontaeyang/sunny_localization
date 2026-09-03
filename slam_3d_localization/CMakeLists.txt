@@ -32,6 +32,7 @@ find_package(Eigen3 REQUIRED)
 
 add_library(slam_3d_localizer
   src/constant_velocity_predictor.cpp
+  src/map_odom_transform_cache.cpp
   src/odom_pose_buffer.cpp
   src/slam_3d_localizer.cpp
 )
@@ -77,6 +78,11 @@ if(BUILD_TESTING)
     test/test_constant_velocity_predictor.cpp
   )
   target_link_libraries(test_constant_velocity_predictor slam_3d_localizer)
+  ament_add_gtest(
+    test_map_odom_transform_cache
+    test/test_map_odom_transform_cache.cpp
+  )
+  target_link_libraries(test_map_odom_transform_cache slam_3d_localizer)
   ament_add_gtest(test_odom_pose_buffer test/test_odom_pose_buffer.cpp)
   target_link_libraries(test_odom_pose_buffer slam_3d_localizer)
   ament_add_pytest_test(test_localization_config test/test_localization_config.py)

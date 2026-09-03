@@ -14,6 +14,8 @@ slam_3d_localizer:
     registration_method: gicp
     cloud_subscription_reliable: false
     cloud_subscription_depth: 5
+    # After an accepted localization with synchronized odometry, publish the
+    # cached map -> odom transform at each strictly newer odometry stamp.
     publish_tf: true
     publish_local_map: true
     input_scan_preprocessed: false

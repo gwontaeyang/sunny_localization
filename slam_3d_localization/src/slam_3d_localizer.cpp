@@ -351,6 +351,7 @@ void Slam3dLocalizer::initialPoseCallback(
   have_accepted_odom_ = false;
   have_last_cloud_stamp_ = false;
   odom_buffer_.clear();
+  map_odom_transform_cache_.invalidate();
   constant_velocity_predictor_.reset();
   initial_pose_update_pending_ = true;
   nomotion_update_pending_ = false;
@@ -378,18 +379,30 @@ void Slam3dLocalizer::odomCallback(const nav_msgs::msg::Odometry::SharedPtr mess
       "Ignoring odometry with invalid values or quaternion");
     return;
   }
-  std::lock_guard<std::mutex> lock(state_mutex_);
-  const bool timestamp_reset = odom_buffer_.insert(
-    rclcpp::Time(message->header.stamp).nanoseconds(), pose);
-  if (timestamp_reset) {
-    have_accepted_odom_ = false;
-    have_processed_odom_ = false;
-    have_last_cloud_stamp_ = false;
-    constant_velocity_predictor_.reset();
-    ++odom_timestamp_reset_count_;
-    RCLCPP_WARN(
-      get_logger(),
-      "Detected odometry timestamp rewind; cleared temporal anchors");
+  const rclcpp::Time stamp(message->header.stamp);
+  std::optional<Eigen::Isometry3d> map_T_odom;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    const bool timestamp_reset = odom_buffer_.insert(stamp.nanoseconds(), pose);
+    if (timestamp_reset) {
+      have_accepted_odom_ = false;
+      have_processed_odom_ = false;
+      have_last_cloud_stamp_ = false;
+      map_odom_transform_cache_.invalidate();
+      constant_velocity_predictor_.reset();
+      ++odom_timestamp_reset_count_;
+      RCLCPP_WARN(
+        get_logger(),
+        "Detected odometry timestamp rewind; cleared temporal anchors and map-to-odom TF");
+    } else if (publish_tf_) {
+      // Keep TF timestamps strictly increasing even if the odometry stream
+      // contains duplicate or slightly out-of-order messages. Reanchoring the
+      // transform alone deliberately does not reopen this timestamp gate.
+      map_T_odom = map_odom_transform_cache_.takeForOdomStamp(stamp.nanoseconds());
+    }
+  }
+  if (map_T_odom.has_value()) {
+    publishMapToOdomTransform(*map_T_odom, stamp);
   }
 }
 
@@ -620,6 +633,7 @@ void Slam3dLocalizer::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedP
     have_processed_odom_ = false;
     have_accepted_odom_ = false;
     odom_buffer_.clear();
+    map_odom_transform_cache_.invalidate();
     constant_velocity_predictor_.reset();
     ++cloud_timestamp_reset_count_;
     RCLCPP_WARN(
@@ -771,8 +785,18 @@ void Slam3dLocalizer::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedP
   if (have_synced_odom) {
     accepted_odom_T_base_ = odom_lookup.odom_T_base;
     have_accepted_odom_ = true;
+    // Only an accepted scan match paired with synchronized odometry may
+    // create a map-to-odom correction. Broadcasting belongs to odomCallback.
+    if (!map_odom_transform_cache_.reanchor(map_T_base_, odom_lookup.odom_T_base)) {
+      RCLCPP_ERROR(
+        get_logger(),
+        "Failed to cache a finite map-to-odom transform after accepted localization");
+    }
   } else {
     have_accepted_odom_ = false;
+    // Keep the last correction until another synchronized localization can
+    // replace it. This preserves a continuous map -> odom chain at odom rate;
+    // the unsynchronized scan is still reported in diagnostics.
   }
   if (use_constant_velocity_prediction_) {
     if (nomotion_update) {
@@ -782,9 +806,7 @@ void Slam3dLocalizer::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedP
     }
     constant_velocity_prediction.history_ready = constant_velocity_predictor_.ready();
   }
-  publishResult(
-    map_T_base_, have_synced_odom ? &odom_lookup.odom_T_base : nullptr,
-    *scan, stamp, fitness);
+  publishResult(map_T_base_, *scan, stamp, fitness);
   const std::string accepted_reason = initial_pose_update ?
     "initial_pose_update_accepted" :
     (nomotion_update ? "nomotion_update_accepted" :
@@ -802,8 +824,8 @@ void Slam3dLocalizer::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedP
 }
 
 void Slam3dLocalizer::publishResult(
-  const Eigen::Isometry3d & map_T_base, const Eigen::Isometry3d * odom_T_base,
-  const CloudT & scan_base, const rclcpp::Time & stamp, double fitness)
+  const Eigen::Isometry3d & map_T_base, const CloudT & scan_base,
+  const rclcpp::Time & stamp, double fitness)
 {
   nav_msgs::msg::Odometry pose;
   pose.header.stamp = stamp;
@@ -835,15 +857,17 @@ void Slam3dLocalizer::publishResult(
     map_message.header.frame_id = map_frame_;
     local_map_pub_->publish(map_message);
   }
+}
 
-  if (publish_tf_ && odom_T_base != nullptr) {
-    geometry_msgs::msg::TransformStamped transform;
-    transform.header.stamp = stamp;
-    transform.header.frame_id = map_frame_;
-    transform.child_frame_id = odom_frame_;
-    transform.transform = isometryToTransform(map_T_base * odom_T_base->inverse());
-    tf_broadcaster_->sendTransform(transform);
-  }
+void Slam3dLocalizer::publishMapToOdomTransform(
+  const Eigen::Isometry3d & map_T_odom, const rclcpp::Time & stamp)
+{
+  geometry_msgs::msg::TransformStamped transform;
+  transform.header.stamp = stamp;
+  transform.header.frame_id = map_frame_;
+  transform.child_frame_id = odom_frame_;
+  transform.transform = isometryToTransform(map_T_odom);
+  tf_broadcaster_->sendTransform(transform);
 }
 
 void Slam3dLocalizer::publishDiagnostic(
