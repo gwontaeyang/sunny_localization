@@ -122,6 +122,43 @@ TEST(OdomPoseBuffer, ExplicitClearRemovesPriorEpochSamples)
   EXPECT_FALSE(buffer.lookup(100 * kSecondNs).valid);
 }
 
+TEST(OdomPoseBuffer, ClearPreservesHighWatermarkForLaterEpochRewindDetection)
+{
+  OdomPoseBuffer buffer(5.0, 0.20, 0.05, 1.0);
+  EXPECT_FALSE(buffer.insert(100 * kSecondNs, pose(1.0)));
+  buffer.clear();
+  EXPECT_EQ(buffer.size(), 0U);
+
+  EXPECT_TRUE(buffer.insert(10 * kSecondNs, pose(2.0)));
+
+  EXPECT_EQ(buffer.size(), 1U);
+  const auto result = buffer.lookup(10 * kSecondNs);
+  ASSERT_TRUE(result.valid);
+  EXPECT_NEAR(result.odom_T_base.translation().x(), 2.0, 1.0e-9);
+}
+
+TEST(OdomPoseBuffer, SmallOutOfOrderInsertDoesNotLowerEpochHighWatermark)
+{
+  OdomPoseBuffer buffer(5.0, 0.20, 0.05, 1.0);
+  EXPECT_FALSE(buffer.insert(100 * kSecondNs, pose(1.0)));
+  EXPECT_FALSE(buffer.insert(100 * kSecondNs - kSecondNs / 2, pose(2.0)));
+  buffer.clear();
+
+  EXPECT_TRUE(buffer.insert(98 * kSecondNs + 800000000LL, pose(3.0)));
+  EXPECT_EQ(buffer.size(), 1U);
+}
+
+TEST(OdomPoseBuffer, DetectedEpochRewindRebasesHighWatermarkToNewStamp)
+{
+  OdomPoseBuffer buffer(5.0, 0.20, 0.05, 1.0);
+  EXPECT_FALSE(buffer.insert(100 * kSecondNs, pose(1.0)));
+  EXPECT_TRUE(buffer.insert(10 * kSecondNs, pose(2.0)));
+  buffer.clear();
+
+  EXPECT_FALSE(buffer.insert(10 * kSecondNs - kSecondNs / 2, pose(3.0)));
+  EXPECT_EQ(buffer.size(), 1U);
+}
+
 TEST(OdomPoseBuffer, RejectsNonFiniteTimingParameters)
 {
   EXPECT_THROW(

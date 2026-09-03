@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <optional>
 #include <string>
 
 namespace gole::slam_3d_localization
@@ -38,6 +39,8 @@ public:
 
   bool insert(std::int64_t stamp_ns, const Eigen::Isometry3d & odom_T_base);
   OdomLookupResult lookup(std::int64_t stamp_ns) const;
+  // Drops interpolation samples but retains the observed-stamp high-water
+  // mark so a later odometry epoch rewind remains detectable.
   void clear();
   std::size_t size() const;
 
@@ -58,6 +61,7 @@ private:
   std::int64_t max_interpolation_gap_ns_;
   std::int64_t max_nearest_age_ns_;
   std::int64_t timestamp_reset_threshold_ns_;
+  std::optional<std::int64_t> highest_observed_stamp_ns_;
   std::deque<Sample> samples_;
 };
 

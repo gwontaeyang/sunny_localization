@@ -51,11 +51,16 @@ bool OdomPoseBuffer::insert(
   }
 
   bool timestamp_reset = false;
-  if (!samples_.empty() &&
-    stamp_ns < samples_.back().stamp_ns - timestamp_reset_threshold_ns_)
+  if (highest_observed_stamp_ns_.has_value() &&
+    stamp_ns < *highest_observed_stamp_ns_ - timestamp_reset_threshold_ns_)
   {
     samples_.clear();
     timestamp_reset = true;
+    highest_observed_stamp_ns_ = stamp_ns;
+  } else if (!highest_observed_stamp_ns_.has_value() ||
+    stamp_ns > *highest_observed_stamp_ns_)
+  {
+    highest_observed_stamp_ns_ = stamp_ns;
   }
 
   const auto position = std::lower_bound(

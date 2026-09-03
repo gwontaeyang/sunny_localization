@@ -4,6 +4,8 @@ slam_3d_localizer:
     map_frame: map
     odom_frame: odom
     base_frame: base_link
+    # These three frames must be nonempty and pairwise distinct. Odometry
+    # messages must exactly declare odom_frame -> base_frame.
     cloud_topic: /slam_3d/points/center
     odom_topic: /odometry/filtered
     initial_pose_topic: /initialpose
@@ -51,6 +53,8 @@ slam_3d_localizer:
     constant_velocity_translation_limit_m: 0.30
     constant_velocity_rotation_limit_deg: 10.0
     constant_velocity_max_gap_s: 0.50
+    # Disabled by default. Site/replay profiles may bound scan queue latency.
+    max_cloud_age_s: 0.0
     cloud_timestamp_reset_threshold_s: 1.0
     odom_buffer_duration_s: 5.0
     odom_max_interpolation_gap_s: 0.20

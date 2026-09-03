@@ -2,6 +2,7 @@
 #ifndef SLAM_3D_LOCALIZATION__SLAM_3D_LOCALIZER_HPP_
 #define SLAM_3D_LOCALIZATION__SLAM_3D_LOCALIZER_HPP_
 
+#include "slam_3d_localization/cloud_freshness_guard.hpp"
 #include "slam_3d_localization/constant_velocity_predictor.hpp"
 #include "slam_3d_localization/map_odom_transform_cache.hpp"
 #include "slam_3d_localization/odom_pose_buffer.hpp"
@@ -151,6 +152,7 @@ private:
   double constant_velocity_translation_limit_m_{0.30};
   double constant_velocity_rotation_limit_deg_{10.0};
   double constant_velocity_max_gap_s_{0.50};
+  double max_cloud_age_s_{0.0};
   double cloud_timestamp_reset_threshold_s_{1.0};
   double odom_buffer_duration_s_{5.0};
   double odom_max_interpolation_gap_s_{0.20};
@@ -161,7 +163,13 @@ private:
   ::gole::slam_3d_core::VoxelSurfelRegistration::Config surfel_config_{};
 
   CloudT::Ptr global_map_{new CloudT};
+  // Lock order: state_mutex_ may be held before either specialized mutex.
+  // The odometry callback never holds a specialized mutex while acquiring
+  // state_mutex_, and never holds odom_buffer_mutex_ while acquiring
+  // tf_cache_mutex_.
   mutable std::mutex state_mutex_;
+  mutable std::mutex odom_buffer_mutex_;
+  mutable std::mutex tf_cache_mutex_;
   bool initialized_{false};
   bool have_accepted_odom_{false};
   bool have_processed_odom_{false};
@@ -171,6 +179,10 @@ private:
   std::int64_t last_cloud_stamp_ns_{0};
   std::atomic<std::size_t> odom_timestamp_reset_count_{0};
   std::atomic<std::size_t> cloud_timestamp_reset_count_{0};
+  std::atomic<std::size_t> stale_cloud_before_processing_count_{0};
+  std::atomic<std::size_t> stale_cloud_after_registration_count_{0};
+  std::atomic<double> last_cloud_age_s_{0.0};
+  std::atomic<bool> last_cloud_age_valid_{false};
   Eigen::Isometry3d map_T_base_{Eigen::Isometry3d::Identity()};
   Eigen::Isometry3d accepted_odom_T_base_{Eigen::Isometry3d::Identity()};
   Eigen::Isometry3d processed_odom_T_base_{Eigen::Isometry3d::Identity()};
@@ -181,10 +193,12 @@ private:
   ConstantVelocityPredictor constant_velocity_predictor_{
     constant_velocity_translation_limit_m_, constant_velocity_rotation_limit_deg_,
     constant_velocity_max_gap_s_};
+  CloudFreshnessGuard cloud_freshness_guard_{max_cloud_age_s_};
 
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+  rclcpp::CallbackGroup::SharedPtr odom_callback_group_;
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr
     initial_pose_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;

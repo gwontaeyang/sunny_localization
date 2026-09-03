@@ -144,6 +144,7 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
     "constant_velocity_rotation_limit_deg", constant_velocity_rotation_limit_deg_);
   constant_velocity_max_gap_s_ = declare_parameter<double>(
     "constant_velocity_max_gap_s", constant_velocity_max_gap_s_);
+  max_cloud_age_s_ = declare_parameter<double>("max_cloud_age_s", max_cloud_age_s_);
   cloud_timestamp_reset_threshold_s_ = declare_parameter<double>(
     "cloud_timestamp_reset_threshold_s", cloud_timestamp_reset_threshold_s_);
   odom_buffer_duration_s_ = declare_parameter<double>(
@@ -221,7 +222,12 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
     std::isfinite(crop_min_z_) && std::isfinite(crop_max_z_) &&
     crop_min_x_ < crop_max_x_ && crop_min_y_ < crop_max_y_ &&
     crop_min_z_ < crop_max_z_;
-  if ((registration_method_ != "gicp" && registration_method_ != "voxel_surfel") ||
+  const bool valid_frame_contract =
+    !map_frame_.empty() && !odom_frame_.empty() && !base_frame_.empty() &&
+    map_frame_ != odom_frame_ && map_frame_ != base_frame_ &&
+    odom_frame_ != base_frame_;
+  if (!valid_frame_contract ||
+    (registration_method_ != "gicp" && registration_method_ != "voxel_surfel") ||
     (input_scan_preprocessed_ && crop_box_enabled_) || !valid_crop_bounds ||
     !::gole::slam_3d_core::VoxelSurfelRegistration::isValidConfig(surfel_config_) ||
     scan_voxel_leaf_m_ <= 0.0 || map_voxel_leaf_m_ <= 0.0 ||
@@ -234,6 +240,7 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
     constant_velocity_rotation_limit_deg_ >= 180.0 ||
     !std::isfinite(constant_velocity_max_gap_s_) ||
     constant_velocity_max_gap_s_ <= 0.0 ||
+    !std::isfinite(max_cloud_age_s_) || max_cloud_age_s_ < 0.0 ||
     !std::isfinite(cloud_timestamp_reset_threshold_s_) ||
     cloud_timestamp_reset_threshold_s_ <= 0.0 ||
     cloud_subscription_depth_ <= 0 || odom_buffer_duration_s_ <= 0.0 ||
@@ -252,8 +259,8 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
     min_scan_points_ <= 0 || min_local_map_points_ <= 0)
   {
     throw std::invalid_argument(
-            "registration, preprocessing, voxel, local-map, correction, cloud QoS, "
-            "prediction, or odometry timing parameters are invalid");
+            "frame, registration, preprocessing, voxel, local-map, correction, "
+            "cloud QoS, prediction, or odometry timing parameters are invalid");
   }
   odom_buffer_ = OdomPoseBuffer(
     odom_buffer_duration_s_, odom_max_interpolation_gap_s_,
@@ -261,6 +268,7 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
   constant_velocity_predictor_ = ConstantVelocityPredictor(
     constant_velocity_translation_limit_m_, constant_velocity_rotation_limit_deg_,
     constant_velocity_max_gap_s_);
+  cloud_freshness_guard_ = CloudFreshnessGuard(max_cloud_age_s_);
   loadMap();
 
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
@@ -279,9 +287,13 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
     create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
     initial_pose_topic_, rclcpp::QoS(1).reliable(),
     std::bind(&Slam3dLocalizer::initialPoseCallback, this, std::placeholders::_1));
+  odom_callback_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  rclcpp::SubscriptionOptions odom_subscription_options;
+  odom_subscription_options.callback_group = odom_callback_group_;
   odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
     odom_topic_, rclcpp::QoS(100).reliable(),
-    std::bind(&Slam3dLocalizer::odomCallback, this, std::placeholders::_1));
+    std::bind(&Slam3dLocalizer::odomCallback, this, std::placeholders::_1),
+    odom_subscription_options);
   auto cloud_qos = rclcpp::QoS(
     rclcpp::KeepLast(std::max(1, cloud_subscription_depth_))).durability_volatile();
   if (cloud_subscription_reliable_) {
@@ -345,13 +357,16 @@ void Slam3dLocalizer::initialPoseCallback(
     return;
   }
   std::lock_guard<std::mutex> lock(state_mutex_);
+  {
+    std::scoped_lock temporal_lock(odom_buffer_mutex_, tf_cache_mutex_);
+    odom_buffer_.clear();
+    map_odom_transform_cache_.clearCorrectionPreserveWatermark();
+  }
   map_T_base_ = pose;
   initialized_ = true;
   have_processed_odom_ = false;
   have_accepted_odom_ = false;
   have_last_cloud_stamp_ = false;
-  odom_buffer_.clear();
-  map_odom_transform_cache_.invalidate();
   constant_velocity_predictor_.reset();
   initial_pose_update_pending_ = true;
   nomotion_update_pending_ = false;
@@ -362,8 +377,8 @@ void Slam3dLocalizer::initialPoseCallback(
 
 void Slam3dLocalizer::odomCallback(const nav_msgs::msg::Odometry::SharedPtr message)
 {
-  if ((!message->header.frame_id.empty() && message->header.frame_id != odom_frame_) ||
-    (!message->child_frame_id.empty() && message->child_frame_id != base_frame_))
+  if (message->header.frame_id != odom_frame_ ||
+    message->child_frame_id != base_frame_)
   {
     RCLCPP_WARN_THROTTLE(
       get_logger(), *get_clock(), 5000,
@@ -380,29 +395,45 @@ void Slam3dLocalizer::odomCallback(const nav_msgs::msg::Odometry::SharedPtr mess
     return;
   }
   const rclcpp::Time stamp(message->header.stamp);
-  std::optional<Eigen::Isometry3d> map_T_odom;
+  bool timestamp_reset = false;
   {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    const bool timestamp_reset = odom_buffer_.insert(stamp.nanoseconds(), pose);
-    if (timestamp_reset) {
+    std::lock_guard<std::mutex> odom_lock(odom_buffer_mutex_);
+    timestamp_reset = odom_buffer_.insert(stamp.nanoseconds(), pose);
+  }
+  if (timestamp_reset) {
+    // Invalidate immediately so no correction from the old odometry epoch can
+    // be emitted while a long registration still owns state_mutex_.
+    {
+      std::lock_guard<std::mutex> tf_lock(tf_cache_mutex_);
+      map_odom_transform_cache_.resetOdomEpoch();
+    }
+    {
+      std::lock_guard<std::mutex> state_lock(state_mutex_);
       have_accepted_odom_ = false;
       have_processed_odom_ = false;
       have_last_cloud_stamp_ = false;
-      map_odom_transform_cache_.invalidate();
       constant_velocity_predictor_.reset();
+      // A cloud callback that was already registering may have reanchored
+      // after the immediate reset above. Clear that stale correction again,
+      // while preserving the newly reset watermark.
+      std::lock_guard<std::mutex> tf_lock(tf_cache_mutex_);
+      map_odom_transform_cache_.clearCorrectionPreserveWatermark();
       ++odom_timestamp_reset_count_;
-      RCLCPP_WARN(
-        get_logger(),
-        "Detected odometry timestamp rewind; cleared temporal anchors and map-to-odom TF");
-    } else if (publish_tf_) {
-      // Keep TF timestamps strictly increasing even if the odometry stream
-      // contains duplicate or slightly out-of-order messages. Reanchoring the
-      // transform alone deliberately does not reopen this timestamp gate.
-      map_T_odom = map_odom_transform_cache_.takeForOdomStamp(stamp.nanoseconds());
     }
+    RCLCPP_WARN(
+      get_logger(),
+      "Detected odometry timestamp rewind; cleared temporal anchors and map-to-odom TF");
+    return;
   }
-  if (map_T_odom.has_value()) {
-    publishMapToOdomTransform(*map_T_odom, stamp);
+  if (publish_tf_) {
+    // Hold the cache lock through sendTransform so correction invalidation and
+    // TF publication have a single, deterministic ordering.
+    std::lock_guard<std::mutex> tf_lock(tf_cache_mutex_);
+    const auto map_T_odom =
+      map_odom_transform_cache_.takeForOdomStamp(stamp.nanoseconds());
+    if (map_T_odom.has_value()) {
+      publishMapToOdomTransform(*map_T_odom, stamp);
+    }
   }
 }
 
@@ -604,9 +635,55 @@ Slam3dLocalizer::RegistrationOutcome Slam3dLocalizer::registerScanToMap(
 void Slam3dLocalizer::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr message)
 {
   const auto start = std::chrono::steady_clock::now();
+  const rclcpp::Time stamp(message->header.stamp);
+  const std::int64_t cloud_stamp_ns = stamp.nanoseconds();
+  bool cloud_timestamp_reset = false;
+  {
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    const std::int64_t cloud_reset_threshold_ns = static_cast<std::int64_t>(
+      std::llround(cloud_timestamp_reset_threshold_s_ * 1.0e9));
+    cloud_timestamp_reset = have_last_cloud_stamp_ &&
+      cloud_stamp_ns < last_cloud_stamp_ns_ - cloud_reset_threshold_ns;
+    if (cloud_timestamp_reset) {
+      // Epoch safety precedes freshness and every other early return. The old
+      // correction must not keep publishing when ROS time advances but a new
+      // cloud epoch starts with timestamps that are already stale.
+      have_processed_odom_ = false;
+      have_accepted_odom_ = false;
+      {
+        std::scoped_lock temporal_lock(odom_buffer_mutex_, tf_cache_mutex_);
+        odom_buffer_.clear();
+        map_odom_transform_cache_.clearCorrectionPreserveWatermark();
+      }
+      constant_velocity_predictor_.reset();
+      ++cloud_timestamp_reset_count_;
+      RCLCPP_WARN(
+        get_logger(),
+        "Detected cloud timestamp rewind; reset localization temporal anchors");
+    }
+  }
+  const CloudFreshnessResult freshness_before = cloud_freshness_guard_.evaluate(
+    get_clock()->now().nanoseconds(), cloud_stamp_ns);
+  last_cloud_age_valid_.store(freshness_before.ros_time_started);
+  last_cloud_age_s_.store(freshness_before.age_s);
+  if (freshness_before.enabled && !freshness_before.ros_time_started) {
+    publishDiagnostic(
+      stamp, diagnostic_msgs::msg::DiagnosticStatus::WARN, "degraded",
+      "waiting_for_ros_time_before_processing", std::numeric_limits<double>::infinity(),
+      0, 0, 0.0);
+    return;
+  }
+  if (freshness_before.stale) {
+    ++stale_cloud_before_processing_count_;
+    publishDiagnostic(
+      stamp, diagnostic_msgs::msg::DiagnosticStatus::WARN, "degraded",
+      "stale_cloud_before_processing", std::numeric_limits<double>::infinity(),
+      0, 0, 0.0);
+    return;
+  }
+
   const PreparedScan prepared_scan = prepareScan(*message);
   const CloudT::Ptr & scan = prepared_scan.cloud;
-  const rclcpp::Time stamp(message->header.stamp);
   if (scan->size() < static_cast<std::size_t>(min_scan_points_)) {
     publishDiagnostic(
       stamp, diagnostic_msgs::msg::DiagnosticStatus::WARN, "degraded",
@@ -624,36 +701,37 @@ void Slam3dLocalizer::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedP
     return;
   }
 
-  const std::int64_t cloud_stamp_ns = stamp.nanoseconds();
-  const std::int64_t cloud_reset_threshold_ns = static_cast<std::int64_t>(
-    std::llround(cloud_timestamp_reset_threshold_s_ * 1.0e9));
-  const bool cloud_timestamp_reset = have_last_cloud_stamp_ &&
-    cloud_stamp_ns < last_cloud_stamp_ns_ - cloud_reset_threshold_ns;
-  if (cloud_timestamp_reset) {
-    have_processed_odom_ = false;
-    have_accepted_odom_ = false;
-    odom_buffer_.clear();
-    map_odom_transform_cache_.invalidate();
-    constant_velocity_predictor_.reset();
-    ++cloud_timestamp_reset_count_;
-    RCLCPP_WARN(
-      get_logger(),
-      "Detected cloud timestamp rewind; reset localization temporal anchors");
-  } else if (have_last_cloud_stamp_ && cloud_stamp_ns <= last_cloud_stamp_ns_) {
+  // predict() may rebase its internal history for invalid timing gaps. Keep a
+  // snapshot after any deliberate epoch reset so a result that becomes stale
+  // during registration cannot otherwise mutate predictor state.
+  const ConstantVelocityPredictor constant_velocity_predictor_before =
+    constant_velocity_predictor_;
+  if (!cloud_timestamp_reset && have_last_cloud_stamp_ &&
+    cloud_stamp_ns <= last_cloud_stamp_ns_)
+  {
+    std::size_t odom_buffer_size = 0;
+    {
+      std::lock_guard<std::mutex> odom_lock(odom_buffer_mutex_);
+      odom_buffer_size = odom_buffer_.size();
+    }
     publishDiagnostic(
       stamp, diagnostic_msgs::msg::DiagnosticStatus::WARN, "degraded",
       "nonmonotonic_cloud_stamp", std::numeric_limits<double>::infinity(),
       scan->size(), 0,
       std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - start).count(),
-      nullptr, odom_buffer_.size());
+      nullptr, odom_buffer_size);
     return;
   }
-  have_last_cloud_stamp_ = true;
-  last_cloud_stamp_ns_ = cloud_stamp_ns;
-  const OdomLookupResult odom_lookup = cloud_timestamp_reset ?
-    OdomLookupResult{} : odom_buffer_.lookup(cloud_stamp_ns);
-  const std::size_t odom_buffer_size = odom_buffer_.size();
+  OdomLookupResult odom_lookup;
+  std::size_t odom_buffer_size = 0;
+  {
+    std::lock_guard<std::mutex> odom_lock(odom_buffer_mutex_);
+    if (!cloud_timestamp_reset) {
+      odom_lookup = odom_buffer_.lookup(cloud_stamp_ns);
+    }
+    odom_buffer_size = odom_buffer_.size();
+  }
   const bool have_synced_odom = odom_lookup.valid;
   const bool initial_pose_update = initial_pose_update_pending_;
   const bool nomotion_update = nomotion_update_pending_;
@@ -672,6 +750,8 @@ void Slam3dLocalizer::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedP
     if (translation < update_min_translation_m_ &&
       rotation_deg < update_min_rotation_deg_)
     {
+      have_last_cloud_stamp_ = true;
+      last_cloud_stamp_ns_ = cloud_stamp_ns;
       publishDiagnostic(
         stamp, diagnostic_msgs::msg::DiagnosticStatus::OK, "idle",
         "motion_below_update_threshold", 0.0, scan->size(), 0,
@@ -700,6 +780,8 @@ void Slam3dLocalizer::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedP
   }
   CloudT::Ptr local_map = buildLocalMap(prediction.translation());
   if (local_map->size() < static_cast<std::size_t>(min_local_map_points_)) {
+    have_last_cloud_stamp_ = true;
+    last_cloud_stamp_ns_ = cloud_stamp_ns;
     publishDiagnostic(
       stamp, diagnostic_msgs::msg::DiagnosticStatus::ERROR, "lost",
       "insufficient_local_map_points", std::numeric_limits<double>::infinity(),
@@ -708,6 +790,44 @@ void Slam3dLocalizer::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedP
     return;
   }
 
+  const RegistrationOutcome registration = registerScanToMap(
+    *scan, *local_map, prediction);
+  const CloudFreshnessResult freshness_after = cloud_freshness_guard_.evaluate(
+    get_clock()->now().nanoseconds(), cloud_stamp_ns);
+  last_cloud_age_valid_.store(freshness_after.ros_time_started);
+  last_cloud_age_s_.store(freshness_after.age_s);
+  if (freshness_after.enabled && !freshness_after.ros_time_started) {
+    constant_velocity_predictor_ = constant_velocity_predictor_before;
+    publishDiagnostic(
+      stamp, diagnostic_msgs::msg::DiagnosticStatus::WARN, "degraded",
+      "waiting_for_ros_time_after_registration", registration.fitness,
+      scan->size(), local_map->size(),
+      std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - start).count(),
+      &odom_lookup, odom_buffer_size, &registration,
+      prepared_scan.robot_crop_removed_points,
+      prepared_scan.effective_voxel_leaf_m,
+      prediction_source, &constant_velocity_prediction);
+    return;
+  }
+  if (freshness_after.stale) {
+    constant_velocity_predictor_ = constant_velocity_predictor_before;
+    ++stale_cloud_after_registration_count_;
+    publishDiagnostic(
+      stamp, diagnostic_msgs::msg::DiagnosticStatus::WARN, "degraded",
+      "stale_cloud_after_registration", registration.fitness,
+      scan->size(), local_map->size(),
+      std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - start).count(),
+      &odom_lookup, odom_buffer_size, &registration,
+      prepared_scan.robot_crop_removed_points,
+      prepared_scan.effective_voxel_leaf_m,
+      prediction_source, &constant_velocity_prediction);
+    return;
+  }
+
+  have_last_cloud_stamp_ = true;
+  last_cloud_stamp_ns_ = cloud_stamp_ns;
   if (have_synced_odom) {
     processed_odom_T_base_ = odom_lookup.odom_T_base;
     have_processed_odom_ = true;
@@ -715,8 +835,6 @@ void Slam3dLocalizer::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedP
     have_processed_odom_ = false;
   }
 
-  const RegistrationOutcome registration = registerScanToMap(
-    *scan, *local_map, prediction);
   const double fitness = registration.fitness;
   const Eigen::Isometry3d & result = registration.map_T_base;
   const Eigen::Isometry3d correction = prediction.inverse() * result;
@@ -787,7 +905,10 @@ void Slam3dLocalizer::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedP
     have_accepted_odom_ = true;
     // Only an accepted scan match paired with synchronized odometry may
     // create a map-to-odom correction. Broadcasting belongs to odomCallback.
-    if (!map_odom_transform_cache_.reanchor(map_T_base_, odom_lookup.odom_T_base)) {
+    std::lock_guard<std::mutex> tf_lock(tf_cache_mutex_);
+    if (!map_odom_transform_cache_.reanchor(
+        map_T_base_, odom_lookup.odom_T_base, cloud_stamp_ns))
+    {
       RCLCPP_ERROR(
         get_logger(),
         "Failed to cache a finite map-to-odom transform after accepted localization");
@@ -983,6 +1104,28 @@ void Slam3dLocalizer::publishDiagnostic(
     keyValue(
       "cloud_timestamp_reset_count",
       std::to_string(cloud_timestamp_reset_count_.load())));
+  const std::size_t stale_before = stale_cloud_before_processing_count_.load();
+  const std::size_t stale_after = stale_cloud_after_registration_count_.load();
+  const char * stale_stage = reason == "stale_cloud_before_processing" ?
+    "before_processing" :
+    (reason == "stale_cloud_after_registration" ? "after_registration" : "none");
+  status.values.push_back(
+    keyValue(
+      "cloud_freshness_enabled", max_cloud_age_s_ > 0.0 ? "true" : "false"));
+  status.values.push_back(
+    keyValue(
+      "cloud_age_s",
+      last_cloud_age_valid_.load() ?
+      std::to_string(last_cloud_age_s_.load()) : "ros_time_not_started"));
+  status.values.push_back(
+    keyValue("max_cloud_age_s", std::to_string(max_cloud_age_s_)));
+  status.values.push_back(keyValue("stale_cloud_drop_stage", stale_stage));
+  status.values.push_back(
+    keyValue("stale_cloud_before_processing_count", std::to_string(stale_before)));
+  status.values.push_back(
+    keyValue("stale_cloud_after_registration_count", std::to_string(stale_after)));
+  status.values.push_back(
+    keyValue("stale_cloud_drop_count", std::to_string(stale_before + stale_after)));
   status.values.push_back(
     keyValue(
       "input_scan_preprocessed", input_scan_preprocessed_ ? "true" : "false"));

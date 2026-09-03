@@ -13,7 +13,9 @@ def test_default_config_has_safe_registration_gates():
     params = data["slam_3d_localizer"]["ros__parameters"]
 
     assert params["map_path"] == ""
-    assert params["map_frame"] != params["odom_frame"]
+    frames = (params["map_frame"], params["odom_frame"], params["base_frame"])
+    assert all(frames)
+    assert len(set(frames)) == 3
     assert params["registration_method"] in {"gicp", "voxel_surfel"}
     assert params["registration_method"] == "gicp"
     assert params["input_scan_preprocessed"] is False
@@ -38,6 +40,7 @@ def test_default_config_has_safe_registration_gates():
     assert params["constant_velocity_translation_limit_m"] == 0.30
     assert params["constant_velocity_rotation_limit_deg"] == 10.0
     assert params["constant_velocity_max_gap_s"] > 0.0
+    assert params["max_cloud_age_s"] == 0.0
     assert params["cloud_timestamp_reset_threshold_s"] > 0.0
     assert params["odom_buffer_duration_s"] > 0.0
     assert (
@@ -182,6 +185,30 @@ def test_launch_requires_map_path_and_does_not_start_hardware():
     assert "hesai" not in launch_text.lower()
 
 
+def test_node_uses_two_threads_and_a_dedicated_odom_callback_group():
+    node_text = (
+        PACKAGE_ROOT / "src" / "slam_3d_localizer_node.cpp"
+    ).read_text()
+    header = (
+        PACKAGE_ROOT
+        / "include"
+        / "slam_3d_localization"
+        / "slam_3d_localizer.hpp"
+    ).read_text()
+    implementation = (
+        PACKAGE_ROOT / "src" / "slam_3d_localizer.cpp"
+    ).read_text()
+
+    assert "rclcpp::executors::MultiThreadedExecutor" in node_text
+    assert "rclcpp::ExecutorOptions(), 2" in node_text
+    assert "odom_callback_group_" in header
+    assert "CallbackGroupType::MutuallyExclusive" in implementation
+    assert (
+        "odom_subscription_options.callback_group = odom_callback_group_;"
+        in implementation
+    )
+
+
 def test_amcl_compatible_nomotion_update_contract_is_present():
     header = (
         PACKAGE_ROOT
@@ -257,25 +284,29 @@ def test_map_to_odom_tf_is_anchored_by_localization_and_published_only_from_odom
     result_publisher = implementation[result_publisher_start:tf_publisher_start]
 
     assert (
-        "map_odom_transform_cache_.reanchor(map_T_base_, odom_lookup.odom_T_base)"
+        "map_T_base_, odom_lookup.odom_T_base, cloud_stamp_ns"
         in implementation
     )
-    assert "map_odom_transform_cache_.takeForOdomStamp(stamp.nanoseconds())" in odom_callback
+    assert (
+        "map_odom_transform_cache_.takeForOdomStamp(stamp.nanoseconds())"
+        in odom_callback
+    )
     assert "publishMapToOdomTransform(*map_T_odom, stamp);" in odom_callback
     assert "publish_tf_" in odom_callback
     assert "sendTransform" not in result_publisher
     assert implementation.count("tf_broadcaster_->sendTransform(transform);") == 1
 
     reanchor = implementation.index(
-        "map_odom_transform_cache_.reanchor(map_T_base_, odom_lookup.odom_T_base)"
+        "map_odom_transform_cache_.reanchor("
     )
     unsynchronized_accept = implementation.index("} else {", reanchor)
     predictor_update = implementation.index(
         "if (use_constant_velocity_prediction_) {", unsynchronized_accept
     )
-    assert "map_odom_transform_cache_.invalidate();" not in implementation[
-        unsynchronized_accept:predictor_update
-    ]
+    assert (
+        "map_odom_transform_cache_.clearCorrectionPreserveWatermark();"
+        not in implementation[unsynchronized_accept:predictor_update]
+    )
 
 
 def test_map_to_odom_tf_cache_is_invalidated_on_pose_and_timestamp_epoch_resets():
@@ -290,14 +321,123 @@ def test_map_to_odom_tf_cache_is_invalidated_on_pose_and_timestamp_epoch_resets(
         "void Slam3dLocalizer::odomCallback(", initial_pose_start
     )
     cloud_start = implementation.index("void Slam3dLocalizer::cloudCallback(")
-    cloud_reset = implementation.index("if (cloud_timestamp_reset) {", cloud_start)
+    cloud_reset = implementation.index(
+        "cloud_timestamp_reset =", cloud_start
+    )
+    freshness_before = implementation.index("freshness_before", cloud_reset)
 
-    assert "map_odom_transform_cache_.invalidate();" in implementation[
-        initial_pose_start:odom_start
-    ]
-    assert "map_odom_transform_cache_.invalidate();" in implementation[
+    assert (
+        "map_odom_transform_cache_.clearCorrectionPreserveWatermark();"
+        in implementation[initial_pose_start:odom_start]
+    )
+    assert "map_odom_transform_cache_.resetOdomEpoch();" in implementation[
         odom_start:cloud_start
     ]
-    assert "map_odom_transform_cache_.invalidate();" in implementation[
-        cloud_reset : cloud_reset + 700
+    assert (
+        "map_odom_transform_cache_.clearCorrectionPreserveWatermark();"
+        in implementation[cloud_reset:freshness_before]
+    )
+
+
+def test_normal_odom_path_does_not_take_long_running_localization_state_mutex():
+    implementation = (
+        PACKAGE_ROOT / "src" / "slam_3d_localizer.cpp"
+    ).read_text()
+    odom_start = implementation.index("void Slam3dLocalizer::odomCallback(")
+    odom_end = implementation.index(
+        "void Slam3dLocalizer::noMotionUpdateCallback(", odom_start
+    )
+    odom_callback = implementation[odom_start:odom_end]
+    reset_branch = odom_callback.index("if (timestamp_reset) {")
+    normal_tf_branch = odom_callback.index("if (publish_tf_) {", reset_branch)
+
+    assert "odom_buffer_mutex_" in odom_callback[:reset_branch]
+    assert "state_mutex_" not in odom_callback[:reset_branch]
+    assert "state_mutex_" not in odom_callback[normal_tf_branch:]
+    assert "tf_cache_mutex_" in odom_callback[normal_tf_branch:]
+
+
+def test_frames_are_validated_and_odom_requires_exact_frame_ids():
+    implementation = (
+        PACKAGE_ROOT / "src" / "slam_3d_localizer.cpp"
+    ).read_text()
+    odom_start = implementation.index("void Slam3dLocalizer::odomCallback(")
+    odom_end = implementation.index(
+        "void Slam3dLocalizer::noMotionUpdateCallback(", odom_start
+    )
+    odom_callback = implementation[odom_start:odom_end]
+
+    assert "!map_frame_.empty()" in implementation
+    assert "!odom_frame_.empty()" in implementation
+    assert "!base_frame_.empty()" in implementation
+    assert "map_frame_ != odom_frame_" in implementation
+    assert "map_frame_ != base_frame_" in implementation
+    assert "odom_frame_ != base_frame_" in implementation
+    assert "message->header.frame_id != odom_frame_" in odom_callback
+    assert "message->child_frame_id != base_frame_" in odom_callback
+    assert "message->header.frame_id.empty()" not in odom_callback
+    assert "message->child_frame_id.empty()" not in odom_callback
+
+
+def test_cloud_freshness_checks_bracket_processing_and_state_commit():
+    implementation = (
+        PACKAGE_ROOT / "src" / "slam_3d_localizer.cpp"
+    ).read_text()
+    callback = implementation[implementation.index(
+        "void Slam3dLocalizer::cloudCallback("
+    ) : implementation.index("void Slam3dLocalizer::publishResult(")]
+
+    cloud_reset_detection = callback.index("cloud_timestamp_reset =")
+    cloud_reset_clear = callback.index(
+        "map_odom_transform_cache_.clearCorrectionPreserveWatermark();",
+        cloud_reset_detection,
+    )
+    freshness_before = callback.index("freshness_before")
+    waiting_before = callback.index("waiting_for_ros_time_before_processing")
+    waiting_before_return = callback.index("return;", waiting_before)
+    prepare_scan = callback.index("prepareScan(*message)")
+    registration = callback.index("registerScanToMap(")
+    freshness_after = callback.index("freshness_after", registration)
+    waiting_after = callback.index("waiting_for_ros_time_after_registration")
+    waiting_after_return = callback.index("return;", waiting_after)
+    stale_after = callback.index("if (freshness_after.stale)", freshness_after)
+    stale_after_return = callback.index("return;", stale_after)
+    timestamp_commit = callback.index(
+        "have_last_cloud_stamp_ = true;", stale_after_return
+    )
+    pose_commit = callback.index("map_T_base_ = result", timestamp_commit)
+    tf_anchor = callback.index("map_odom_transform_cache_.reanchor(", pose_commit)
+
+    assert cloud_reset_detection < cloud_reset_clear < freshness_before
+    assert freshness_before < waiting_before < waiting_before_return < prepare_scan
+    assert prepare_scan < registration < freshness_after
+    assert freshness_after < waiting_after < waiting_after_return < stale_after
+    assert freshness_after < stale_after < stale_after_return < timestamp_commit
+    assert "constant_velocity_predictor_ = constant_velocity_predictor_before;" in callback[
+        freshness_after:waiting_after_return
     ]
+    assert "constant_velocity_predictor_ = constant_velocity_predictor_before;" in callback[
+        stale_after:stale_after_return
+    ]
+    assert timestamp_commit < pose_commit < tf_anchor
+    assert "stale_cloud_before_processing" in callback
+    assert "stale_cloud_after_registration" in callback
+
+
+def test_cloud_freshness_parameter_and_diagnostics_contract():
+    implementation = (
+        PACKAGE_ROOT / "src" / "slam_3d_localizer.cpp"
+    ).read_text()
+
+    assert 'declare_parameter<double>("max_cloud_age_s"' in implementation
+    assert "max_cloud_age_s_ < 0.0" in implementation
+    for key in (
+        "cloud_freshness_enabled",
+        "cloud_age_s",
+        "max_cloud_age_s",
+        "stale_cloud_drop_stage",
+        "stale_cloud_before_processing_count",
+        "stale_cloud_after_registration_count",
+        "stale_cloud_drop_count",
+    ):
+        assert f'"{key}"' in implementation

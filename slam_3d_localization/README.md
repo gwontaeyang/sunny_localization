@@ -23,6 +23,10 @@ The node starts in `uninitialized`. Set a 6-DoF pose in `map` using
 pose tool supplies x/y/yaw; z, roll, and pitch then remain at their message
 values.
 
+`map_frame`, `odom_frame`, and `base_frame` must be nonempty and pairwise
+distinct. Odometry messages are accepted only when they explicitly declare the
+exact configured `odom_frame -> base_frame`; empty frame IDs are rejected.
+
 ## Run
 
 ```bash
@@ -238,16 +242,34 @@ frame and does not crop or voxelize the scan a second time. Set
 `map_already_voxelized=true` only for a final PCD already written at the desired
 map resolution.
 
+`max_cloud_age_s` rejects queued scans whose age strictly exceeds the configured
+limit. The source default is `0.0` (disabled); a bounded value belongs in a
+site/replay profile. Once ROS time is greater than zero, freshness is checked
+before scan preparation and again immediately after registration, before any
+normal cloud timestamp, localization pose, predictor update, or TF correction
+is committed. A scan exactly at the limit or stamped in the future is not stale.
+When the guard is enabled, scans wait in a degraded state until ROS time has
+started instead of bypassing the check. A detected cloud timestamp epoch rewind
+is the safety exception: it clears the old temporal state and TF correction
+before freshness evaluation, scan preparation, and every early return, even if
+that scan is already stale.
+Diagnostics distinguish `stale_cloud_before_processing` from
+`stale_cloud_after_registration` and report the current age, configured limit,
+drop stage, per-stage counts, and total count.
+
 Odometry is buffered and looked up at each cloud's header stamp. Bracketed
 samples are interpolated only when their span is at most
 `odom_max_interpolation_gap_s`; a single nearby sample is accepted only within
 `odom_max_nearest_age_s` and only when it is at or before the cloud stamp.
 Future-only samples are never used as a pose hold. A timestamp rewind larger
-than `odom_timestamp_reset_threshold_s` clears temporal anchors. When no valid
-lookup exists, scan-to-map matching continues without an odometry prediction,
-an accepted scan leaves the last synchronized `map -> odom` correction in
-place because it cannot safely replace it, and diagnostics report
-`odom_sync_valid=false`.
+than `odom_timestamp_reset_threshold_s` clears temporal anchors. Clearing
+interpolation samples for an initial pose or cloud reset retains an independent
+highest-observed odometry stamp, so a later rewind is still classified as a new
+odometry epoch. Small out-of-order samples do not lower that high-water mark.
+When no valid lookup exists, scan-to-map matching continues without an
+odometry prediction, an accepted scan leaves the last synchronized
+`map -> odom` correction in place because it cannot safely replace it, and
+diagnostics report `odom_sync_valid=false`.
 
 For wheel-less profiles, `use_constant_velocity_prediction=true` opts into the
 same one-accepted-step pose extrapolation used by the indoor mapper frontend.
@@ -307,13 +329,25 @@ with the next valid odometry callback, the node broadcasts one cached transform
 for each strictly newer odometry header stamp. Duplicate and slightly
 out-of-order stamps are suppressed so TF time never repeats or moves backward.
 Reanchoring updates the transform but deliberately preserves the last emitted
-stamp, preventing queued stale odometry from reopening the gate. This keeps TF
-cadence aligned with the owner of `odom -> base_link` while scan matching runs
-at its own rate. Before the first accepted synchronized localization, no
-`map -> odom` TF is published. A new initial pose, an odometry timestamp rewind,
-or a cloud timestamp epoch reset invalidates the cache and resets its stamp gate
-until another accepted synchronized localization reanchors it.
+stamp. A TF is emitted only when its odometry stamp is newer than both the
+localization anchor stamp and the last emitted stamp, preventing queued stale
+odometry from reopening the gate. Correction invalidation preserves that
+watermark; only a detected odometry timestamp epoch rewind resets it. This
+keeps TF cadence aligned with the owner of `odom -> base_link` while scan
+matching runs at its own rate. Before the first accepted synchronized
+localization, no `map -> odom` TF is published. A new initial pose, an odometry
+timestamp rewind, or a cloud timestamp epoch reset invalidates the correction
+until another accepted synchronized localization reanchors it. Only the
+odometry rewind also resets the stamp gate.
+
 `publish_tf=false` suppresses every broadcast.
+
+The executable uses a two-thread executor and gives odometry a dedicated
+mutually-exclusive callback group. Odometry buffering and TF cache access have
+separate short-lived locks, so the normal odometry callback is not serialized
+behind the registration state lock. Executor scheduling, DDS delivery, and CPU
+load can still affect wall-time cadence. Epoch-reset handling may briefly wait
+for localization state after it has already invalidated the old TF correction.
 
 The odometry source remains responsible for `odom -> base_link`. Do not enable
 another `map -> odom` publisher at the same time.

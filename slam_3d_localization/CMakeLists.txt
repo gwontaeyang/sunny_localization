@@ -31,6 +31,7 @@ find_package(PCL REQUIRED COMPONENTS common filters io registration)
 find_package(Eigen3 REQUIRED)
 
 add_library(slam_3d_localizer
+  src/cloud_freshness_guard.cpp
   src/constant_velocity_predictor.cpp
   src/map_odom_transform_cache.cpp
   src/odom_pose_buffer.cpp
@@ -73,6 +74,11 @@ install(FILES README.md DESTINATION share/${PROJECT_NAME})
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_cmake_pytest REQUIRED)
+  ament_add_gtest(
+    test_cloud_freshness_guard
+    test/test_cloud_freshness_guard.cpp
+  )
+  target_link_libraries(test_cloud_freshness_guard slam_3d_localizer)
   ament_add_gtest(
     test_constant_velocity_predictor
     test/test_constant_velocity_predictor.cpp

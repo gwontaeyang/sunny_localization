@@ -13,15 +13,20 @@ namespace gole::slam_3d_localization
 class MapOdomTransformCache
 {
 public:
+  // This pure state helper is intentionally not internally synchronized.
+  // Concurrent callers must serialize every method with one external mutex.
   bool reanchor(
     const Eigen::Isometry3d & map_T_base,
-    const Eigen::Isometry3d & odom_T_base);
-  void invalidate();
+    const Eigen::Isometry3d & odom_T_base,
+    std::int64_t anchor_stamp_ns);
+  void clearCorrectionPreserveWatermark();
+  void resetOdomEpoch();
   std::optional<Eigen::Isometry3d> value() const;
   std::optional<Eigen::Isometry3d> takeForOdomStamp(std::int64_t stamp_ns);
 
 private:
   std::optional<Eigen::Isometry3d> map_T_odom_;
+  std::optional<std::int64_t> correction_anchor_stamp_ns_;
   std::optional<std::int64_t> last_emitted_odom_stamp_ns_;
 };
 
