@@ -122,6 +122,7 @@ private:
   bool cloud_subscription_reliable_{false};
   int cloud_subscription_depth_{5};
   bool publish_tf_{true};
+  bool publish_identity_map_to_odom_before_localization_{false};
   bool publish_local_map_{true};
   bool publish_global_map_{true};
   bool input_scan_preprocessed_{false};

@@ -29,6 +29,69 @@ TEST(MapOdomTransformCache, StartsInvalid)
   EXPECT_FALSE(cache.takeForOdomStamp(100).has_value());
 }
 
+TEST(MapOdomTransformCache, IdentityBootstrapFollowsMonotonicOdomBeforeLocalization)
+{
+  MapOdomTransformCache cache;
+
+  const auto first = cache.takeForOdomStamp(100, true);
+  ASSERT_TRUE(first.has_value());
+  EXPECT_TRUE(
+    first->matrix().isApprox(Eigen::Isometry3d::Identity().matrix(), 1.0e-12));
+  EXPECT_FALSE(cache.takeForOdomStamp(99, true).has_value());
+  EXPECT_FALSE(cache.takeForOdomStamp(100, true).has_value());
+  EXPECT_TRUE(cache.takeForOdomStamp(101, true).has_value());
+}
+
+TEST(MapOdomTransformCache, FirstLocalizationReplacesIdentityBootstrap)
+{
+  MapOdomTransformCache cache;
+  ASSERT_TRUE(cache.takeForOdomStamp(100, true).has_value());
+  const Eigen::Isometry3d map_T_base = makePose(
+    Eigen::Vector3d(3.0, -2.0, 0.5), Eigen::Vector3d::UnitZ(), 0.2);
+  ASSERT_TRUE(cache.reanchor(map_T_base, Eigen::Isometry3d::Identity(), 101));
+
+  EXPECT_FALSE(cache.takeForOdomStamp(101, true).has_value());
+  const auto corrected = cache.takeForOdomStamp(102, true);
+  ASSERT_TRUE(corrected.has_value());
+  EXPECT_TRUE(corrected->matrix().isApprox(map_T_base.matrix(), 1.0e-12));
+}
+
+TEST(MapOdomTransformCache, ExplicitRetirementStopsIdentityBootstrapPermanently)
+{
+  MapOdomTransformCache cache;
+  ASSERT_TRUE(cache.takeForOdomStamp(100, true).has_value());
+
+  cache.retireIdentityBootstrap();
+  cache.clearCorrectionPreserveWatermark();
+
+  EXPECT_FALSE(cache.takeForOdomStamp(101, true).has_value());
+  cache.resetOdomEpoch();
+  EXPECT_FALSE(cache.takeForOdomStamp(1, true).has_value());
+}
+
+TEST(MapOdomTransformCache, OdomEpochResetRetiresStartupIdentityAssumption)
+{
+  MapOdomTransformCache cache;
+  ASSERT_TRUE(cache.takeForOdomStamp(100, true).has_value());
+
+  cache.resetOdomEpoch();
+
+  EXPECT_FALSE(cache.takeForOdomStamp(1, true).has_value());
+}
+
+TEST(MapOdomTransformCache, NeverFallsBackToIdentityAfterLocalization)
+{
+  MapOdomTransformCache cache;
+  ASSERT_TRUE(
+    cache.reanchor(Eigen::Isometry3d::Identity(), Eigen::Isometry3d::Identity(), 10));
+  ASSERT_TRUE(cache.takeForOdomStamp(20, true).has_value());
+
+  cache.clearCorrectionPreserveWatermark();
+  EXPECT_FALSE(cache.takeForOdomStamp(21, true).has_value());
+  cache.resetOdomEpoch();
+  EXPECT_FALSE(cache.takeForOdomStamp(1, true).has_value());
+}
+
 TEST(MapOdomTransformCache, ReanchorsWithMapBaseTimesInverseOdomBase)
 {
   const Eigen::Isometry3d map_T_base = makePose(

@@ -95,6 +95,8 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
   cloud_subscription_depth_ = declare_parameter<int>(
     "cloud_subscription_depth", cloud_subscription_depth_);
   publish_tf_ = declare_parameter<bool>("publish_tf", true);
+  publish_identity_map_to_odom_before_localization_ = declare_parameter<bool>(
+    "publish_identity_map_to_odom_before_localization", false);
   publish_local_map_ = declare_parameter<bool>("publish_local_map", true);
   publish_global_map_ = declare_parameter<bool>("publish_global_map", true);
   input_scan_preprocessed_ = declare_parameter<bool>(
@@ -318,6 +320,13 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
   if (publish_global_map_) {
     publishGlobalMap();
   }
+  if (publish_tf_ && publish_identity_map_to_odom_before_localization_) {
+    RCLCPP_WARN(
+      get_logger(),
+      "Identity map-to-odom bootstrap enabled while the startup map/odometry-origin "
+      "assumption is valid; an initial pose, timestamp reset, or accepted localization "
+      "retires it");
+  }
 
   RCLCPP_INFO(
     get_logger(),
@@ -382,6 +391,7 @@ void Slam3dLocalizer::initialPoseCallback(
   {
     std::scoped_lock temporal_lock(odom_buffer_mutex_, tf_cache_mutex_);
     odom_buffer_.clear();
+    map_odom_transform_cache_.retireIdentityBootstrap();
     map_odom_transform_cache_.clearCorrectionPreserveWatermark();
   }
   map_T_base_ = pose;
@@ -452,7 +462,8 @@ void Slam3dLocalizer::odomCallback(const nav_msgs::msg::Odometry::SharedPtr mess
     // TF publication have a single, deterministic ordering.
     std::lock_guard<std::mutex> tf_lock(tf_cache_mutex_);
     const auto map_T_odom =
-      map_odom_transform_cache_.takeForOdomStamp(stamp.nanoseconds());
+      map_odom_transform_cache_.takeForOdomStamp(
+      stamp.nanoseconds(), publish_identity_map_to_odom_before_localization_);
     if (map_T_odom.has_value()) {
       publishMapToOdomTransform(*map_T_odom, stamp);
     }
@@ -675,6 +686,7 @@ void Slam3dLocalizer::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedP
       {
         std::scoped_lock temporal_lock(odom_buffer_mutex_, tf_cache_mutex_);
         odom_buffer_.clear();
+        map_odom_transform_cache_.retireIdentityBootstrap();
         map_odom_transform_cache_.clearCorrectionPreserveWatermark();
       }
       constant_velocity_predictor_.reset();
@@ -1134,6 +1146,10 @@ void Slam3dLocalizer::publishDiagnostic(
   status.values.push_back(
     keyValue(
       "cloud_freshness_enabled", max_cloud_age_s_ > 0.0 ? "true" : "false"));
+  status.values.push_back(
+    keyValue(
+      "identity_map_to_odom_bootstrap_enabled",
+      publish_identity_map_to_odom_before_localization_ ? "true" : "false"));
   status.values.push_back(
     keyValue(
       "cloud_age_s",

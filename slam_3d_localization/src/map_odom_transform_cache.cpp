@@ -9,6 +9,9 @@ bool MapOdomTransformCache::reanchor(
   const Eigen::Isometry3d & odom_T_base,
   std::int64_t anchor_stamp_ns)
 {
+  // Once a real localization attempts to establish map -> odom, never expose
+  // the startup identity assumption again, even if validation fails.
+  retireIdentityBootstrap();
   if (!map_T_base.matrix().allFinite() || !odom_T_base.matrix().allFinite()) {
     clearCorrectionPreserveWatermark();
     return false;
@@ -24,6 +27,11 @@ bool MapOdomTransformCache::reanchor(
   return true;
 }
 
+void MapOdomTransformCache::retireIdentityBootstrap()
+{
+  identity_bootstrap_retired_ = true;
+}
+
 void MapOdomTransformCache::clearCorrectionPreserveWatermark()
 {
   map_T_odom_.reset();
@@ -32,6 +40,9 @@ void MapOdomTransformCache::clearCorrectionPreserveWatermark()
 
 void MapOdomTransformCache::resetOdomEpoch()
 {
+  // A restarted odometry epoch may have a different origin, so the startup
+  // identity assumption is no longer safe.
+  retireIdentityBootstrap();
   clearCorrectionPreserveWatermark();
   last_emitted_odom_stamp_ns_.reset();
 }
@@ -42,12 +53,24 @@ std::optional<Eigen::Isometry3d> MapOdomTransformCache::value() const
 }
 
 std::optional<Eigen::Isometry3d> MapOdomTransformCache::takeForOdomStamp(
-  std::int64_t stamp_ns)
+  std::int64_t stamp_ns, bool allow_identity_before_first_reanchor)
 {
-  if (!map_T_odom_.has_value() || !correction_anchor_stamp_ns_.has_value() ||
-    stamp_ns <= *correction_anchor_stamp_ns_ ||
-    (last_emitted_odom_stamp_ns_.has_value() &&
-    stamp_ns <= *last_emitted_odom_stamp_ns_))
+  if (last_emitted_odom_stamp_ns_.has_value() &&
+    stamp_ns <= *last_emitted_odom_stamp_ns_)
+  {
+    return std::nullopt;
+  }
+
+  if (!map_T_odom_.has_value()) {
+    if (!allow_identity_before_first_reanchor || identity_bootstrap_retired_) {
+      return std::nullopt;
+    }
+    last_emitted_odom_stamp_ns_ = stamp_ns;
+    return Eigen::Isometry3d::Identity();
+  }
+
+  if (!correction_anchor_stamp_ns_.has_value() ||
+    stamp_ns <= *correction_anchor_stamp_ns_)
   {
     return std::nullopt;
   }

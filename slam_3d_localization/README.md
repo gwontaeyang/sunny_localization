@@ -335,7 +335,16 @@ odometry from reopening the gate. Correction invalidation preserves that
 watermark; only a detected odometry timestamp epoch rewind resets it. This
 keeps TF cadence aligned with the owner of `odom -> base_link` while scan
 matching runs at its own rate. Before the first accepted synchronized
-localization, no `map -> odom` TF is published. A new initial pose, an odometry
+localization, no `map -> odom` TF is published by default. When
+`publish_identity_map_to_odom_before_localization=true`, the node instead
+broadcasts identity `map -> odom` at each valid odometry stamp while the
+startup map/odometry-origin assumption remains valid. This is intended only
+when the initial map and odometry origins coincide, for example to make the
+loaded map and robot TF tree immediately visible in RViz. An explicit initial
+pose, a timestamp epoch reset, or the first accepted synchronized localization
+permanently retires the identity bootstrap; accepted localization replaces it
+with the measured correction. The node never falls back to identity after
+the startup assumption has been retired. A new initial pose, an odometry
 timestamp rewind, or a cloud timestamp epoch reset invalidates the correction
 until another accepted synchronized localization reanchors it. Only the
 odometry rewind also resets the stamp gate.

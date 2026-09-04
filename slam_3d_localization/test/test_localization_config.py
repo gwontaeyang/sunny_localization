@@ -30,6 +30,7 @@ def test_default_config_has_safe_registration_gates():
     assert isinstance(params["cloud_subscription_reliable"], bool)
     assert params["cloud_subscription_depth"] > 0
     assert params["publish_tf"] is True
+    assert params["publish_identity_map_to_odom_before_localization"] is False
     assert params["publish_global_map"] is True
     assert params["global_map_topic"] == "/localization_3d/global_map"
     assert params["fitness_threshold"] > 0.0
@@ -225,6 +226,7 @@ def test_avs_profile_uses_robot_topics_and_classified_map():
     assert params["odom_topic"] == "/odom"
     assert params["global_map_topic"] == "/localization_3d/global_map"
     assert params["publish_global_map"] is True
+    assert params["publish_identity_map_to_odom_before_localization"] is True
 
 
 def test_avs_rviz_launch_starts_only_localization_and_visualization():
@@ -318,7 +320,7 @@ def test_map_to_odom_tf_is_anchored_by_localization_and_published_only_from_odom
         in implementation
     )
     assert (
-        "map_odom_transform_cache_.takeForOdomStamp(stamp.nanoseconds())"
+        "stamp.nanoseconds(), publish_identity_map_to_odom_before_localization_"
         in odom_callback
     )
     assert "publishMapToOdomTransform(*map_T_odom, stamp);" in odom_callback
@@ -360,6 +362,9 @@ def test_map_to_odom_tf_cache_is_invalidated_on_pose_and_timestamp_epoch_resets(
         "map_odom_transform_cache_.clearCorrectionPreserveWatermark();"
         in implementation[initial_pose_start:odom_start]
     )
+    assert "map_odom_transform_cache_.retireIdentityBootstrap();" in implementation[
+        initial_pose_start:odom_start
+    ]
     assert "map_odom_transform_cache_.resetOdomEpoch();" in implementation[
         odom_start:cloud_start
     ]
@@ -367,6 +372,9 @@ def test_map_to_odom_tf_cache_is_invalidated_on_pose_and_timestamp_epoch_resets(
         "map_odom_transform_cache_.clearCorrectionPreserveWatermark();"
         in implementation[cloud_reset:freshness_before]
     )
+    assert "map_odom_transform_cache_.retireIdentityBootstrap();" in implementation[
+        cloud_reset:freshness_before
+    ]
 
 
 def test_normal_odom_path_does_not_take_long_running_localization_state_mutex():
@@ -461,6 +469,7 @@ def test_cloud_freshness_parameter_and_diagnostics_contract():
 
     assert 'declare_parameter<double>("max_cloud_age_s"' in implementation
     assert "max_cloud_age_s_ < 0.0" in implementation
+    assert '"identity_map_to_odom_bootstrap_enabled"' in implementation
     for key in (
         "cloud_freshness_enabled",
         "cloud_age_s",

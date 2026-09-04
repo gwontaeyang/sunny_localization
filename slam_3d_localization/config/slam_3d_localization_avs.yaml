@@ -18,6 +18,10 @@ slam_3d_localizer:
     # After an accepted localization with synchronized odometry, publish the
     # cached map -> odom transform at each strictly newer odometry stamp.
     publish_tf: true
+    # Keep map -> odom available from the first /odom message while the startup
+    # origins coincide. Initial pose/reset retires it; localization then supplies
+    # the measured correction.
+    publish_identity_map_to_odom_before_localization: true
     publish_local_map: true
     # Publish the original PCD fields (including RGB) once with transient-local QoS.
     publish_global_map: true
