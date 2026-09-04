@@ -3,7 +3,7 @@
 <package format="3">
   <name>slam_3d_localization</name>
   <version>0.1.0</version>
-  <description>Prior-map 3D LiDAR localization using scan-to-map registration.</description>
+  <description>LiDAR-inertial odometry and prior-map 3D localization.</description>
   <maintainer email="gwontaeyang@users.noreply.github.com">gwontaeyang</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_cmake</buildtool_depend>

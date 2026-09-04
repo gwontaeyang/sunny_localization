@@ -37,6 +37,75 @@ ros2 launch slam_3d_localization slam_3d_localization.launch.py \
   map_path:=/absolute/path/to/prior_map.pcd
 ```
 
+## Registration backends
+
+`registration_method` selects `gicp` (the unchanged PCL CPU default),
+`fast_gicp` (OpenMP CPU), `fast_vgicp_cuda` (CUDA), or the existing
+`voxel_surfel` path. FastGICP support is optional: a build without that
+dependency still provides the two existing backends. Selecting a backend that
+was not compiled is a startup error; it never falls back silently.
+
+The validated dependency revision is fast_gicp
+`0e7ec1441c99f7be453db2ea216d5de029387417`. Apply
+`patches/fast_gicp_0e7ec144_cuda12.patch` to that revision before a CUDA 12.6
+build. The patch also makes legacy FindCUDA honor a configurable
+`CMAKE_CUDA_ARCHITECTURES`; use `87` when building the dependency natively on
+Jetson AGX Orin. Build the CPU backend with
+`-DSLAM_3D_LOCALIZATION_FAST_GICP=ON`. Add
+`-DSLAM_3D_LOCALIZATION_ENABLE_FAST_VGICP_CUDA=ON` only after the patched CUDA
+dependency is in the sourced overlay. Keep both options off for a strict
+PCL-only build.
+
+The backend object persists across scans. Set
+`local_map_rebuild_distance_m > 0` to reuse the immutable local-map pointer and
+its CPU/GPU covariance state until that target is rebuilt; zero retains the
+legacy per-scan crop. Diagnostics expose the active backend, build revision,
+CUDA architecture metadata, native convergence/iteration result, constructor,
+target-update, align and total times, and target-cache counters.
+
+FastVGICP is a voxelized objective, not a GPU implementation mathematically
+identical to PCL GICP. Its voxel and neighbor-search parameters must therefore
+be reported with comparisons. In the pinned upstream implementation,
+`max_correspondence_m` does not gate CUDA optimization and CUDA covariance k is
+fixed at 20; the common post-registration overlap diagnostics remain available
+for like-for-like residual comparison. `gicp` remains the shipped default.
+
+The current Gangnam policy uses the separate wheel-free LIO launch. It starts
+only raw LiDAR+IMU odometry and prior-map localization; it does not start the
+legacy wheel/filtered-odometry nodes:
+
+```bash
+ros2 launch slam_3d_localization slam_3d_lio_localization.launch.py \
+  map_path:=/absolute/path/to/prior_map.pcd \
+  use_sim_time:=true
+```
+
+The installed default map is the Stage 30 classified Gangnam PCD. The profile
+consumes `/hesai/center/lidar_points` and `/imu/data`, follows the Stage 29/30
+identity CV7 rotation plus 1.20984 m vertical lever arm, and publishes
+`/localization_3d/lio/odom` plus `odom -> base_link` at IMU cadence. A separate
+no-TF `/localization_3d/lio/scan_odom` carries the final LIO posterior at each
+scan timestamp. The localizer waits for that exact pose before consuming the
+deskewed cloud, keeps constant-velocity prediction off, and owns
+`map -> odom`. Keep the robot stationary for at least the configured 0.5 s IMU
+initialization window.
+
+Wheel velocity remains an opt-in LIO correction through
+`wheel_correction_enabled`; it is `false` in this profile, so no wheel
+subscription is created. Pose-graph anchors are deliberately not loaded or
+applied yet. They should be added later as another disabled-by-default input,
+without changing this LIO-only default path. That future input must declare a
+versioned file format, map frame, timestamp, anchor pose, and validation
+status before a runtime parameter or subscriber is enabled.
+
+For a bounded bag replay, publish only the recorded sensor and static-TF topics
+while the launch above runs with simulated time:
+
+```bash
+ros2 bag play /absolute/path/to/bag --clock \
+  --topics /imu/data /hesai/center/lidar_points /tf_static
+```
+
 The generic file above intentionally keeps constant-velocity prediction off.
 For the replay-verified indoor XT32 lineage with no declared wheel odometry,
 select the dedicated profile instead:
@@ -55,13 +124,10 @@ voxel-surfel registration, and bounded constant-velocity initial guess. Its
 reliable queue depth 128 is a replay contract, not yet a live-production QoS
 recommendation.
 
-The recorded CV7 mount uses a proper `Rx(180 deg)` sensor-to-base rotation:
-vectors map as `(x, y, z) -> (x, -y, -z)`. The upstream SLAM frontend owns
-this correction for deskewed clouds; the C++ localizer consumes that corrected
-cloud and does not subscribe to IMU directly. The diagnostic open-loop IMU
-estimator independently applies the same rotation once to raw bag samples,
-including `R * covariance * R^T`. Do not add another axis flip inside the
-localizer, because that would double-correct the Stage23 map lineage.
+The legacy Stage23 replay profile used an `Rx(180 deg)` IMU experiment. Its
+upstream SLAM frontend owns that correction, so the map localizer must not
+apply it again. The current Stage29/30 Gangnam LIO profile instead follows its
+verified identity-rotation source contract; keep these map lineages separate.
 
 ## Shared core, separate profiles
 

@@ -8,6 +8,7 @@ slam_3d_localizer:
     # messages must exactly declare odom_frame -> base_frame.
     cloud_topic: /slam_3d/points/center
     odom_topic: /odometry/filtered
+    registration_odom_topic: ""
     initial_pose_topic: /initialpose
     pose_topic: /localization_3d/odom
     aligned_cloud_topic: /localization_3d/aligned_points
@@ -17,6 +18,11 @@ slam_3d_localizer:
     registration_method: gicp
     cloud_subscription_reliable: false
     cloud_subscription_depth: 5
+    # Keep legacy behavior by default. LIO profiles enable this so a scan
+    # cannot update map localization without odometry at the same timestamp.
+    require_synced_odom_for_update: false
+    require_exact_odom_for_update: false
+    odom_sync_pending_cloud_limit: 4
     # After an accepted localization with synchronized odometry, publish the
     # cached map -> odom transform at each strictly newer odometry stamp.
     publish_tf: true
@@ -32,6 +38,10 @@ slam_3d_localizer:
     scan_voxel_leaf_m: 0.25
     map_voxel_leaf_m: 0.35
     local_map_radius_m: 35.0
+    # Zero preserves the legacy per-scan crop. A positive distance reuses the
+    # same local-map target (and its CPU/GPU covariances) until the prediction
+    # moves this far from the target center.
+    local_map_rebuild_distance_m: 0.0
     min_range_m: 0.5
     max_range_m: 80.0
     z_min_m: -5.0
@@ -47,6 +57,18 @@ slam_3d_localizer:
     transformation_epsilon: 0.001
     fitness_epsilon: 0.001
     fitness_threshold: 1.0
+    # Used only when registration_method selects a fast_gicp backend.
+    fast_gicp_num_threads: 4
+    fast_gicp_correspondence_randomness: 20
+    fast_gicp_regularization_method: PLANE
+    fast_gicp_rotation_epsilon_rad: 0.002
+    # FastVGICP is voxelized GICP and is not mathematically identical to PCL GICP.
+    fast_vgicp_cuda_voxel_resolution_m: 1.0
+    fast_vgicp_cuda_neighbor_search_method: DIRECT1
+    fast_vgicp_cuda_neighbor_search_radius: 1.5
+    fast_vgicp_cuda_nearest_neighbor_method: CPU_PARALLEL_KDTREE
+    fast_vgicp_cuda_kernel_width: 0.5
+    fast_vgicp_cuda_kernel_max_distance: 3.0
     min_registration_inlier_ratio: 0.15
     max_registration_inlier_rmse_m: 1.5
     max_correction_translation_m: 2.0

@@ -10,7 +10,6 @@
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/io/pcd_io.h>
 #include <pcl/kdtree/kdtree_flann.h>
-#include <pcl/registration/gicp.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <tf2/exceptions.h>
 
@@ -77,6 +76,7 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
   cloud_topic_ = declare_parameter<std::string>(
     "cloud_topic", "/slam_3d/points/center");
   odom_topic_ = declare_parameter<std::string>("odom_topic", "/odometry/filtered");
+  registration_odom_topic_ = declare_parameter<std::string>("registration_odom_topic", "");
   initial_pose_topic_ = declare_parameter<std::string>("initial_pose_topic", "/initialpose");
   pose_topic_ = declare_parameter<std::string>(
     "pose_topic", "/localization_3d/odom");
@@ -94,6 +94,12 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
     "cloud_subscription_reliable", cloud_subscription_reliable_);
   cloud_subscription_depth_ = declare_parameter<int>(
     "cloud_subscription_depth", cloud_subscription_depth_);
+  require_synced_odom_for_update_ = declare_parameter<bool>(
+    "require_synced_odom_for_update", require_synced_odom_for_update_);
+  require_exact_odom_for_update_ = declare_parameter<bool>(
+    "require_exact_odom_for_update", require_exact_odom_for_update_);
+  odom_sync_pending_cloud_limit_ = declare_parameter<int>(
+    "odom_sync_pending_cloud_limit", odom_sync_pending_cloud_limit_);
   publish_tf_ = declare_parameter<bool>("publish_tf", true);
   publish_identity_map_to_odom_before_localization_ = declare_parameter<bool>(
     "publish_identity_map_to_odom_before_localization", false);
@@ -111,6 +117,8 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
   map_voxel_leaf_m_ = declare_parameter<double>("map_voxel_leaf_m", map_voxel_leaf_m_);
   local_map_radius_m_ =
     declare_parameter<double>("local_map_radius_m", local_map_radius_m_);
+  local_map_rebuild_distance_m_ = declare_parameter<double>(
+    "local_map_rebuild_distance_m", local_map_rebuild_distance_m_);
   min_range_m_ = declare_parameter<double>("min_range_m", min_range_m_);
   max_range_m_ = declare_parameter<double>("max_range_m", max_range_m_);
   z_min_m_ = declare_parameter<double>("z_min_m", z_min_m_);
@@ -129,6 +137,29 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
   fitness_epsilon_ = declare_parameter<double>("fitness_epsilon", fitness_epsilon_);
   fitness_threshold_ =
     declare_parameter<double>("fitness_threshold", fitness_threshold_);
+  fast_gicp_num_threads_ = declare_parameter<int>(
+    "fast_gicp_num_threads", fast_gicp_num_threads_);
+  fast_gicp_correspondence_randomness_ = declare_parameter<int>(
+    "fast_gicp_correspondence_randomness", fast_gicp_correspondence_randomness_);
+  fast_gicp_regularization_method_ = declare_parameter<std::string>(
+    "fast_gicp_regularization_method", fast_gicp_regularization_method_);
+  fast_gicp_rotation_epsilon_rad_ = declare_parameter<double>(
+    "fast_gicp_rotation_epsilon_rad", fast_gicp_rotation_epsilon_rad_);
+  fast_vgicp_cuda_voxel_resolution_m_ = declare_parameter<double>(
+    "fast_vgicp_cuda_voxel_resolution_m", fast_vgicp_cuda_voxel_resolution_m_);
+  fast_vgicp_cuda_neighbor_search_method_ = declare_parameter<std::string>(
+    "fast_vgicp_cuda_neighbor_search_method",
+    fast_vgicp_cuda_neighbor_search_method_);
+  fast_vgicp_cuda_neighbor_search_radius_ = declare_parameter<double>(
+    "fast_vgicp_cuda_neighbor_search_radius",
+    fast_vgicp_cuda_neighbor_search_radius_);
+  fast_vgicp_cuda_nearest_neighbor_method_ = declare_parameter<std::string>(
+    "fast_vgicp_cuda_nearest_neighbor_method",
+    fast_vgicp_cuda_nearest_neighbor_method_);
+  fast_vgicp_cuda_kernel_width_ = declare_parameter<double>(
+    "fast_vgicp_cuda_kernel_width", fast_vgicp_cuda_kernel_width_);
+  fast_vgicp_cuda_kernel_max_distance_ = declare_parameter<double>(
+    "fast_vgicp_cuda_kernel_max_distance", fast_vgicp_cuda_kernel_max_distance_);
   min_registration_inlier_ratio_ = declare_parameter<double>(
     "min_registration_inlier_ratio", min_registration_inlier_ratio_);
   max_registration_inlier_rmse_m_ = declare_parameter<double>(
@@ -231,12 +262,38 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
     !map_frame_.empty() && !odom_frame_.empty() && !base_frame_.empty() &&
     map_frame_ != odom_frame_ && map_frame_ != base_frame_ &&
     odom_frame_ != base_frame_;
+  const bool valid_registration_method =
+    registration_method_ == "voxel_surfel" ||
+    isKnownRegistrationBackend(registration_method_);
+  const bool uses_fast_gicp =
+    registration_method_ == "fast_gicp" ||
+    registration_method_ == "fast_vgicp_cuda";
+  const bool valid_fast_gicp_parameters =
+    !uses_fast_gicp ||
+    (fast_gicp_num_threads_ >= 0 && fast_gicp_correspondence_randomness_ >= 3 &&
+    std::isfinite(fast_gicp_rotation_epsilon_rad_) &&
+    fast_gicp_rotation_epsilon_rad_ > 0.0);
+  const bool valid_cuda_parameters =
+    registration_method_ != "fast_vgicp_cuda" ||
+    (std::isfinite(fast_vgicp_cuda_voxel_resolution_m_) &&
+    fast_vgicp_cuda_voxel_resolution_m_ > 0.0 &&
+    std::isfinite(fast_vgicp_cuda_neighbor_search_radius_) &&
+    fast_vgicp_cuda_neighbor_search_radius_ > 0.0 &&
+    std::isfinite(fast_vgicp_cuda_kernel_width_) &&
+    fast_vgicp_cuda_kernel_width_ > 0.0 &&
+    std::isfinite(fast_vgicp_cuda_kernel_max_distance_) &&
+    fast_vgicp_cuda_kernel_max_distance_ > 0.0);
   if (!valid_frame_contract ||
-    (registration_method_ != "gicp" && registration_method_ != "voxel_surfel") ||
+    !valid_registration_method || !valid_fast_gicp_parameters ||
+    !valid_cuda_parameters ||
     (input_scan_preprocessed_ && crop_box_enabled_) || !valid_crop_bounds ||
     !::gole::slam_3d_core::VoxelSurfelRegistration::isValidConfig(surfel_config_) ||
     scan_voxel_leaf_m_ <= 0.0 || map_voxel_leaf_m_ <= 0.0 ||
-    local_map_radius_m_ <= 0.0 || max_correspondence_m_ <= 0.0 ||
+    local_map_radius_m_ <= 0.0 ||
+    !std::isfinite(local_map_rebuild_distance_m_) ||
+    local_map_rebuild_distance_m_ < 0.0 ||
+    local_map_rebuild_distance_m_ >= local_map_radius_m_ ||
+    max_correspondence_m_ <= 0.0 ||
     update_min_translation_m_ < 0.0 || update_min_rotation_deg_ < 0.0 ||
     !std::isfinite(constant_velocity_translation_limit_m_) ||
     constant_velocity_translation_limit_m_ <= 0.0 ||
@@ -248,7 +305,10 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
     !std::isfinite(max_cloud_age_s_) || max_cloud_age_s_ < 0.0 ||
     !std::isfinite(cloud_timestamp_reset_threshold_s_) ||
     cloud_timestamp_reset_threshold_s_ <= 0.0 ||
-    cloud_subscription_depth_ <= 0 || odom_buffer_duration_s_ <= 0.0 ||
+    cloud_subscription_depth_ <= 0 || odom_sync_pending_cloud_limit_ <= 0 ||
+    (require_exact_odom_for_update_ &&
+    (registration_odom_topic_.empty() || registration_odom_topic_ == odom_topic_)) ||
+    odom_buffer_duration_s_ <= 0.0 ||
     odom_max_interpolation_gap_s_ <= 0.0 || odom_max_nearest_age_s_ < 0.0 ||
     odom_max_interpolation_gap_s_ > odom_buffer_duration_s_ ||
     odom_max_nearest_age_s_ > odom_buffer_duration_s_ ||
@@ -270,10 +330,41 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
   odom_buffer_ = OdomPoseBuffer(
     odom_buffer_duration_s_, odom_max_interpolation_gap_s_,
     odom_max_nearest_age_s_, odom_timestamp_reset_threshold_s_);
+  registration_odom_buffer_ = OdomPoseBuffer(
+    odom_buffer_duration_s_, odom_max_interpolation_gap_s_,
+    odom_max_nearest_age_s_, odom_timestamp_reset_threshold_s_);
   constant_velocity_predictor_ = ConstantVelocityPredictor(
     constant_velocity_translation_limit_m_, constant_velocity_rotation_limit_deg_,
     constant_velocity_max_gap_s_);
   cloud_freshness_guard_ = CloudFreshnessGuard(max_cloud_age_s_);
+  if (registration_method_ != "voxel_surfel") {
+    RegistrationBackendConfig backend_config;
+    backend_config.method = registration_method_;
+    backend_config.max_iterations = max_iterations_;
+    backend_config.max_correspondence_m = max_correspondence_m_;
+    backend_config.transformation_epsilon = transformation_epsilon_;
+    backend_config.fitness_epsilon = fitness_epsilon_;
+    backend_config.fast_gicp_num_threads = fast_gicp_num_threads_;
+    backend_config.fast_gicp_correspondence_randomness =
+      fast_gicp_correspondence_randomness_;
+    backend_config.fast_gicp_regularization_method =
+      fast_gicp_regularization_method_;
+    backend_config.fast_gicp_rotation_epsilon_rad =
+      fast_gicp_rotation_epsilon_rad_;
+    backend_config.fast_vgicp_cuda_voxel_resolution_m =
+      fast_vgicp_cuda_voxel_resolution_m_;
+    backend_config.fast_vgicp_cuda_neighbor_search_method =
+      fast_vgicp_cuda_neighbor_search_method_;
+    backend_config.fast_vgicp_cuda_neighbor_search_radius =
+      fast_vgicp_cuda_neighbor_search_radius_;
+    backend_config.fast_vgicp_cuda_nearest_neighbor_method =
+      fast_vgicp_cuda_nearest_neighbor_method_;
+    backend_config.fast_vgicp_cuda_kernel_width =
+      fast_vgicp_cuda_kernel_width_;
+    backend_config.fast_vgicp_cuda_kernel_max_distance =
+      fast_vgicp_cuda_kernel_max_distance_;
+    registration_backend_ = createRegistrationBackend(backend_config);
+  }
   loadMap();
 
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
@@ -301,6 +392,12 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
     odom_topic_, rclcpp::QoS(100).reliable(),
     std::bind(&Slam3dLocalizer::odomCallback, this, std::placeholders::_1),
     odom_subscription_options);
+  if (!registration_odom_topic_.empty() && registration_odom_topic_ != odom_topic_) {
+    registration_odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
+      registration_odom_topic_, rclcpp::QoS(20).reliable(),
+      std::bind(&Slam3dLocalizer::registrationOdomCallback, this, std::placeholders::_1),
+      odom_subscription_options);
+  }
   auto cloud_qos = rclcpp::QoS(
     rclcpp::KeepLast(std::max(1, cloud_subscription_depth_))).durability_volatile();
   if (cloud_subscription_reliable_) {
@@ -311,6 +408,9 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
   cloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
     cloud_topic_, cloud_qos,
     std::bind(&Slam3dLocalizer::cloudCallback, this, std::placeholders::_1));
+  pending_cloud_timer_ = create_wall_timer(
+    std::chrono::milliseconds(2),
+    std::bind(&Slam3dLocalizer::processPendingClouds, this));
   no_motion_update_service_ = create_service<std_srvs::srv::Empty>(
     "~/request_nomotion_update",
     std::bind(
@@ -336,6 +436,18 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
     input_scan_preprocessed_ ? "true" : "false",
     use_constant_velocity_prediction_ ? "true" : "false",
     initial_pose_topic_.c_str());
+  const RegistrationBackendBuildInfo backend_build = registrationBackendBuildInfo();
+  if (registration_backend_) {
+    RCLCPP_INFO(
+      get_logger(),
+      "Registration backend active: %s; %s; init=%.3f ms; fast_gicp_revision=%s; "
+      "cuda_compiled=%s; cuda_architectures=%s",
+      registration_backend_->name(), registration_backend_->runtimeDescription().c_str(),
+      registration_backend_->initializationRuntimeMs(),
+      backend_build.fast_gicp_revision.c_str(),
+      backend_build.fast_vgicp_cuda_compiled ? "true" : "false",
+      backend_build.cuda_architectures.c_str());
+  }
 }
 
 void Slam3dLocalizer::loadMap()
@@ -389,8 +501,10 @@ void Slam3dLocalizer::initialPoseCallback(
   }
   std::lock_guard<std::mutex> lock(state_mutex_);
   {
-    std::scoped_lock temporal_lock(odom_buffer_mutex_, tf_cache_mutex_);
+    std::scoped_lock temporal_lock(
+      odom_buffer_mutex_, registration_odom_buffer_mutex_, tf_cache_mutex_);
     odom_buffer_.clear();
+    registration_odom_buffer_.clear();
     map_odom_transform_cache_.retireIdentityBootstrap();
     map_odom_transform_cache_.clearCorrectionPreserveWatermark();
   }
@@ -400,6 +514,9 @@ void Slam3dLocalizer::initialPoseCallback(
   have_accepted_odom_ = false;
   have_last_cloud_stamp_ = false;
   constant_velocity_predictor_.reset();
+  pending_clouds_.clear();
+  have_cached_local_map_ = false;
+  cached_local_map_.reset();
   initial_pose_update_pending_ = true;
   nomotion_update_pending_ = false;
   RCLCPP_INFO(
@@ -445,6 +562,11 @@ void Slam3dLocalizer::odomCallback(const nav_msgs::msg::Odometry::SharedPtr mess
       have_processed_odom_ = false;
       have_last_cloud_stamp_ = false;
       constant_velocity_predictor_.reset();
+      {
+        std::lock_guard<std::mutex> registration_odom_lock(
+          registration_odom_buffer_mutex_);
+        registration_odom_buffer_.clear();
+      }
       // A cloud callback that was already registering may have reanchored
       // after the immediate reset above. Clear that stale correction again,
       // while preserving the newly reset watermark.
@@ -468,6 +590,31 @@ void Slam3dLocalizer::odomCallback(const nav_msgs::msg::Odometry::SharedPtr mess
       publishMapToOdomTransform(*map_T_odom, stamp);
     }
   }
+}
+
+void Slam3dLocalizer::registrationOdomCallback(
+  const nav_msgs::msg::Odometry::SharedPtr message)
+{
+  if (message->header.frame_id != odom_frame_ ||
+    message->child_frame_id != base_frame_)
+  {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 5000,
+      "Ignoring scan odometry with frames '%s' -> '%s'; expected '%s' -> '%s'",
+      message->header.frame_id.c_str(), message->child_frame_id.c_str(),
+      odom_frame_.c_str(), base_frame_.c_str());
+    return;
+  }
+  Eigen::Isometry3d pose = Eigen::Isometry3d::Identity();
+  if (!poseToIsometry(message->pose.pose, pose)) {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 5000,
+      "Ignoring scan odometry with invalid values or quaternion");
+    return;
+  }
+  std::lock_guard<std::mutex> lock(registration_odom_buffer_mutex_);
+  registration_odom_buffer_.insert(
+    rclcpp::Time(message->header.stamp).nanoseconds(), pose);
 }
 
 void Slam3dLocalizer::noMotionUpdateCallback(
@@ -548,9 +695,25 @@ Slam3dLocalizer::PreparedScan Slam3dLocalizer::prepareScan(
   return prepared;
 }
 
-Slam3dLocalizer::CloudT::Ptr Slam3dLocalizer::buildLocalMap(
-  const Eigen::Vector3d & center) const
+Slam3dLocalizer::LocalMapSnapshot Slam3dLocalizer::buildLocalMap(
+  const Eigen::Vector3d & center)
 {
+  LocalMapSnapshot snapshot;
+  const bool cache_enabled = local_map_rebuild_distance_m_ > 0.0;
+  if (cache_enabled && have_cached_local_map_ && cached_local_map_ &&
+    (center - cached_local_map_center_).norm() < local_map_rebuild_distance_m_)
+  {
+    ++local_map_cache_hit_count_;
+    snapshot.cloud = cached_local_map_;
+    snapshot.reused = true;
+    snapshot.revision = local_map_revision_;
+    snapshot.cache_hit_count = local_map_cache_hit_count_;
+    snapshot.cache_miss_count = local_map_cache_miss_count_;
+    return snapshot;
+  }
+
+  const auto build_start = std::chrono::steady_clock::now();
+  snapshot.cloud.reset(new CloudT);
   pcl::CropBox<PointT> crop;
   crop.setInputCloud(global_map_);
   crop.setMin(
@@ -561,15 +724,26 @@ Slam3dLocalizer::CloudT::Ptr Slam3dLocalizer::buildLocalMap(
     Eigen::Vector4f(
       center.x() + local_map_radius_m_, center.y() + local_map_radius_m_,
       center.z() + local_map_radius_m_, 1.0));
-  CloudT::Ptr result(new CloudT);
-  crop.filter(*result);
-  return result;
+  crop.filter(*snapshot.cloud);
+  snapshot.build_runtime_ms = std::chrono::duration<double, std::milli>(
+    std::chrono::steady_clock::now() - build_start).count();
+  ++local_map_revision_;
+  ++local_map_cache_miss_count_;
+  cached_local_map_ = snapshot.cloud;
+  cached_local_map_center_ = center;
+  have_cached_local_map_ = true;
+  snapshot.revision = local_map_revision_;
+  snapshot.cache_hit_count = local_map_cache_hit_count_;
+  snapshot.cache_miss_count = local_map_cache_miss_count_;
+  return snapshot;
 }
 
 Slam3dLocalizer::RegistrationOutcome Slam3dLocalizer::registerScanToMap(
-  const CloudT & scan, const CloudT & local_map,
-  const Eigen::Isometry3d & prediction) const
+  const CloudT::ConstPtr & scan, const CloudT::ConstPtr & local_map,
+  const std::uint64_t local_map_revision,
+  const Eigen::Isometry3d & prediction)
 {
+  ++registration_attempt_count_;
   RegistrationOutcome outcome;
   outcome.map_T_base = prediction;
   const auto registration_start = std::chrono::steady_clock::now();
@@ -589,9 +763,9 @@ Slam3dLocalizer::RegistrationOutcome Slam3dLocalizer::registerScanToMap(
 
       CloudT aligned;
       pcl::transformPointCloud(
-        scan, aligned, result.map_T_base.matrix().cast<float>());
+        *scan, aligned, result.map_T_base.matrix().cast<float>());
       pcl::KdTreeFLANN<PointT> tree;
-      tree.setInputCloud(local_map.makeShared());
+      tree.setInputCloud(local_map);
       const double max_distance_sq = max_correspondence_m * max_correspondence_m;
       int valid_points = 0;
       double squared_error_sum = 0.0;
@@ -624,7 +798,7 @@ Slam3dLocalizer::RegistrationOutcome Slam3dLocalizer::registerScanToMap(
 
   if (registration_method_ == "voxel_surfel") {
     const ::gole::slam_3d_core::VoxelSurfelRegistration registration(surfel_config_);
-    const auto result = registration.align(scan, local_map, prediction);
+    const auto result = registration.align(*scan, *local_map, prediction);
     outcome.map_T_base = result.target_T_source;
     outcome.backend_accepted = result.accepted;
     outcome.backend_converged = result.converged;
@@ -640,32 +814,84 @@ Slam3dLocalizer::RegistrationOutcome Slam3dLocalizer::registerScanToMap(
     outcome.observable_rank = result.observable_rank;
     outcome.iterations = result.iterations;
     outcome.backend_runtime_ms = result.total_time_ms;
+    outcome.backend_name = "voxel_surfel";
     evaluate_overlap(outcome, std::max(1.0e-3, surfel_config_.max_center_distance));
     return outcome;
   }
 
-  pcl::GeneralizedIterativeClosestPoint<PointT, PointT> registration;
-  registration.setInputSource(scan.makeShared());
-  registration.setInputTarget(local_map.makeShared());
-  registration.setMaximumIterations(max_iterations_);
-  registration.setMaxCorrespondenceDistance(max_correspondence_m_);
-  registration.setTransformationEpsilon(transformation_epsilon_);
-  registration.setEuclideanFitnessEpsilon(fitness_epsilon_);
-  CloudT aligned;
-  registration.align(aligned, prediction.matrix().cast<float>());
-  outcome.backend_accepted = registration.hasConverged();
-  outcome.backend_converged = registration.hasConverged();
-  outcome.backend_reason = registration.hasConverged() ? "converged" : "not_converged";
-  outcome.fitness = registration.hasConverged() ?
-    registration.getFitnessScore(max_correspondence_m_) :
-    std::numeric_limits<double>::infinity();
-  outcome.map_T_base.matrix() = registration.getFinalTransformation().cast<double>();
-  outcome.backend_runtime_ms = std::chrono::duration<double, std::milli>(
-    std::chrono::steady_clock::now() - registration_start).count();
+  if (!registration_backend_) {
+    throw std::logic_error("registration backend was not initialized");
+  }
+  const RegistrationBackendResult result = registration_backend_->align(
+    scan, local_map, local_map_revision, prediction);
+  outcome.map_T_base = result.target_T_source;
+  outcome.backend_accepted = result.converged;
+  outcome.backend_converged = result.converged;
+  outcome.backend_reason = result.reason;
+  outcome.fitness = result.fitness;
+  outcome.iterations = result.iterations;
+  outcome.backend_runtime_ms = result.total_runtime_ms;
+  outcome.backend_name = registration_backend_->name();
+  outcome.backend_is_cuda = registration_backend_->isCuda();
+  outcome.backend_first_call = result.first_call;
+  outcome.target_reused = result.target_reused;
+  outcome.target_revision = result.target_revision;
+  outcome.target_upload_count = result.target_upload_count;
+  outcome.backend_initialization_runtime_ms =
+    registration_backend_->initializationRuntimeMs();
+  outcome.target_update_runtime_ms = result.target_update_runtime_ms;
+  outcome.align_runtime_ms = result.align_runtime_ms;
+  // Use one backend-independent Euclidean overlap definition for quality
+  // comparison. This is diagnostic-only for the GICP-family backends; their
+  // existing convergence and acceptance gates remain unchanged.
+  evaluate_overlap(outcome, max_correspondence_m_);
+  (void)registration_start;
   return outcome;
 }
 
+bool Slam3dLocalizer::hasExactOdom(const std::int64_t stamp_ns) const
+{
+  std::lock_guard<std::mutex> odom_lock(registration_odom_buffer_mutex_);
+  return registration_odom_buffer_.lookup(stamp_ns).mode == OdomLookupMode::kExact;
+}
+
 void Slam3dLocalizer::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr message)
+{
+  ++cloud_callback_count_;
+  if (!require_exact_odom_for_update_) {
+    processCloud(message);
+    return;
+  }
+  pending_clouds_.push_back(message);
+  while (static_cast<int>(pending_clouds_.size()) > odom_sync_pending_cloud_limit_) {
+    pending_clouds_.pop_front();
+    ++unsynchronized_cloud_drop_count_;
+  }
+  if (!hasExactOdom(rclcpp::Time(pending_clouds_.front()->header.stamp).nanoseconds())) {
+    ++exact_odom_wait_count_;
+    publishDiagnostic(
+      rclcpp::Time(message->header.stamp), diagnostic_msgs::msg::DiagnosticStatus::WARN,
+      "degraded", "waiting_for_exact_scan_odom", std::numeric_limits<double>::infinity(),
+      0, 0, 0.0);
+    return;
+  }
+  processPendingClouds();
+}
+
+void Slam3dLocalizer::processPendingClouds()
+{
+  if (!require_exact_odom_for_update_ || pending_clouds_.empty()) {
+    return;
+  }
+  const auto message = pending_clouds_.front();
+  if (!hasExactOdom(rclcpp::Time(message->header.stamp).nanoseconds())) {
+    return;
+  }
+  pending_clouds_.pop_front();
+  processCloud(message);
+}
+
+void Slam3dLocalizer::processCloud(const sensor_msgs::msg::PointCloud2::SharedPtr message)
 {
   const auto start = std::chrono::steady_clock::now();
   const rclcpp::Time stamp(message->header.stamp);
@@ -690,6 +916,7 @@ void Slam3dLocalizer::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedP
         map_odom_transform_cache_.clearCorrectionPreserveWatermark();
       }
       constant_velocity_predictor_.reset();
+      pending_clouds_.clear();
       ++cloud_timestamp_reset_count_;
       RCLCPP_WARN(
         get_logger(),
@@ -759,7 +986,11 @@ void Slam3dLocalizer::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedP
   }
   OdomLookupResult odom_lookup;
   std::size_t odom_buffer_size = 0;
-  {
+  if (require_exact_odom_for_update_) {
+    std::lock_guard<std::mutex> odom_lock(registration_odom_buffer_mutex_);
+    odom_lookup = registration_odom_buffer_.lookup(cloud_stamp_ns);
+    odom_buffer_size = registration_odom_buffer_.size();
+  } else {
     std::lock_guard<std::mutex> odom_lock(odom_buffer_mutex_);
     if (!cloud_timestamp_reset) {
       odom_lookup = odom_buffer_.lookup(cloud_stamp_ns);
@@ -767,10 +998,25 @@ void Slam3dLocalizer::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedP
     odom_buffer_size = odom_buffer_.size();
   }
   const bool have_synced_odom = odom_lookup.valid;
+  const bool have_exact_odom = odom_lookup.mode == OdomLookupMode::kExact;
   const bool initial_pose_update = initial_pose_update_pending_;
   const bool nomotion_update = nomotion_update_pending_;
   const bool forced_update =
     initial_pose_update || nomotion_update || cloud_timestamp_reset;
+  if ((require_synced_odom_for_update_ && !have_synced_odom) ||
+    (require_exact_odom_for_update_ && !have_exact_odom))
+  {
+    ++unsynchronized_cloud_drop_count_;
+    publishDiagnostic(
+      stamp, diagnostic_msgs::msg::DiagnosticStatus::WARN, "degraded",
+      require_exact_odom_for_update_ ? "waiting_for_exact_scan_odom" :
+      "waiting_for_synchronized_lio_odom", std::numeric_limits<double>::infinity(),
+      scan->size(), 0,
+      std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - start).count(),
+      &odom_lookup, odom_buffer_size);
+    return;
+  }
   ConstantVelocityPredictionResult constant_velocity_prediction;
   constant_velocity_prediction.map_T_base = map_T_base_;
   constant_velocity_prediction.history_ready = constant_velocity_predictor_.ready();
@@ -812,7 +1058,8 @@ void Slam3dLocalizer::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedP
     prediction_source = cloud_timestamp_reset ?
       "timestamp_reset_pose_hold" : "forced_pose_hold";
   }
-  CloudT::Ptr local_map = buildLocalMap(prediction.translation());
+  const LocalMapSnapshot local_map_snapshot = buildLocalMap(prediction.translation());
+  const CloudT::Ptr & local_map = local_map_snapshot.cloud;
   if (local_map->size() < static_cast<std::size_t>(min_local_map_points_)) {
     have_last_cloud_stamp_ = true;
     last_cloud_stamp_ns_ = cloud_stamp_ns;
@@ -824,8 +1071,13 @@ void Slam3dLocalizer::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedP
     return;
   }
 
-  const RegistrationOutcome registration = registerScanToMap(
-    *scan, *local_map, prediction);
+  RegistrationOutcome registration = registerScanToMap(
+    scan, local_map, local_map_snapshot.revision, prediction);
+  registration.local_map_reused = local_map_snapshot.reused;
+  registration.local_map_revision = local_map_snapshot.revision;
+  registration.local_map_cache_hit_count = local_map_snapshot.cache_hit_count;
+  registration.local_map_cache_miss_count = local_map_snapshot.cache_miss_count;
+  registration.local_map_build_runtime_ms = local_map_snapshot.build_runtime_ms;
   const CloudFreshnessResult freshness_after = cloud_freshness_guard_.evaluate(
     get_clock()->now().nanoseconds(), cloud_stamp_ns);
   last_cloud_age_valid_.store(freshness_after.ros_time_started);
@@ -961,7 +1213,9 @@ void Slam3dLocalizer::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedP
     }
     constant_velocity_prediction.history_ready = constant_velocity_predictor_.ready();
   }
-  publishResult(map_T_base_, *scan, stamp, fitness);
+  publishResult(map_T_base_, *scan, *local_map, stamp, fitness);
+  const double completed_elapsed = std::chrono::duration<double, std::milli>(
+    std::chrono::steady_clock::now() - start).count();
   const std::string accepted_reason = initial_pose_update ?
     "initial_pose_update_accepted" :
     (nomotion_update ? "nomotion_update_accepted" :
@@ -972,7 +1226,7 @@ void Slam3dLocalizer::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedP
     have_synced_odom ? diagnostic_msgs::msg::DiagnosticStatus::OK :
     diagnostic_msgs::msg::DiagnosticStatus::WARN,
     "tracking", accepted_reason, fitness, scan->size(), local_map->size(),
-    elapsed, &odom_lookup, odom_buffer_size, &registration,
+    completed_elapsed, &odom_lookup, odom_buffer_size, &registration,
     prepared_scan.robot_crop_removed_points,
     prepared_scan.effective_voxel_leaf_m,
     prediction_source, &constant_velocity_prediction);
@@ -980,7 +1234,7 @@ void Slam3dLocalizer::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedP
 
 void Slam3dLocalizer::publishResult(
   const Eigen::Isometry3d & map_T_base, const CloudT & scan_base,
-  const rclcpp::Time & stamp, double fitness)
+  const CloudT & local_map, const rclcpp::Time & stamp, double fitness)
 {
   nav_msgs::msg::Odometry pose;
   pose.header.stamp = stamp;
@@ -1005,9 +1259,8 @@ void Slam3dLocalizer::publishResult(
   aligned_cloud_pub_->publish(aligned_message);
 
   if (publish_local_map_) {
-    const auto local_map = buildLocalMap(map_T_base.translation());
     sensor_msgs::msg::PointCloud2 map_message;
-    pcl::toROSMsg(*local_map, map_message);
+    pcl::toROSMsg(local_map, map_message);
     map_message.header.stamp = stamp;
     map_message.header.frame_id = map_frame_;
     local_map_pub_->publish(map_message);
@@ -1049,7 +1302,41 @@ void Slam3dLocalizer::publishDiagnostic(
   status.values.push_back(keyValue("scan_points", std::to_string(scan_points)));
   status.values.push_back(keyValue("local_map_points", std::to_string(map_points)));
   status.values.push_back(keyValue("runtime_ms", std::to_string(runtime_ms)));
+  status.values.push_back(keyValue("callback_runtime_ms", std::to_string(runtime_ms)));
   status.values.push_back(keyValue("registration_method", registration_method_));
+  const RegistrationBackendBuildInfo backend_build = registrationBackendBuildInfo();
+  status.values.push_back(
+    keyValue(
+      "registration_fast_gicp_compiled",
+      backend_build.fast_gicp_compiled ? "true" : "false"));
+  status.values.push_back(
+    keyValue(
+      "registration_fast_vgicp_cuda_compiled",
+      backend_build.fast_vgicp_cuda_compiled ? "true" : "false"));
+  status.values.push_back(
+    keyValue("registration_fast_gicp_revision", backend_build.fast_gicp_revision));
+  status.values.push_back(
+    keyValue("registration_cuda_architectures", backend_build.cuda_architectures));
+  status.values.push_back(
+    keyValue("fast_gicp_num_threads", std::to_string(fast_gicp_num_threads_)));
+  status.values.push_back(
+    keyValue(
+      "fast_gicp_correspondence_randomness",
+      std::to_string(fast_gicp_correspondence_randomness_)));
+  status.values.push_back(
+    keyValue("fast_gicp_regularization_method", fast_gicp_regularization_method_));
+  status.values.push_back(
+    keyValue(
+      "fast_vgicp_cuda_voxel_resolution_m",
+      std::to_string(fast_vgicp_cuda_voxel_resolution_m_)));
+  status.values.push_back(
+    keyValue(
+      "fast_vgicp_cuda_neighbor_search_method",
+      fast_vgicp_cuda_neighbor_search_method_));
+  status.values.push_back(
+    keyValue(
+      "fast_vgicp_cuda_nearest_neighbor_method",
+      fast_vgicp_cuda_nearest_neighbor_method_));
   status.values.push_back(keyValue("prediction_source", prediction_source));
   status.values.push_back(
     keyValue(
@@ -1152,6 +1439,29 @@ void Slam3dLocalizer::publishDiagnostic(
       publish_identity_map_to_odom_before_localization_ ? "true" : "false"));
   status.values.push_back(
     keyValue(
+      "require_synced_odom_for_update",
+      require_synced_odom_for_update_ ? "true" : "false"));
+  status.values.push_back(
+    keyValue(
+      "require_exact_odom_for_update",
+      require_exact_odom_for_update_ ? "true" : "false"));
+  status.values.push_back(keyValue("registration_odom_topic", registration_odom_topic_));
+  status.values.push_back(
+    keyValue("pending_exact_odom_clouds", std::to_string(pending_clouds_.size())));
+  status.values.push_back(
+    keyValue("exact_odom_wait_count", std::to_string(exact_odom_wait_count_.load())));
+  status.values.push_back(
+    keyValue(
+      "unsynchronized_cloud_drop_count",
+      std::to_string(unsynchronized_cloud_drop_count_.load())));
+  status.values.push_back(
+    keyValue("cloud_callback_count", std::to_string(cloud_callback_count_.load())));
+  status.values.push_back(
+    keyValue(
+      "registration_attempt_count",
+      std::to_string(registration_attempt_count_.load())));
+  status.values.push_back(
+    keyValue(
       "cloud_age_s",
       last_cloud_age_valid_.load() ?
       std::to_string(last_cloud_age_s_.load()) : "ros_time_not_started"));
@@ -1195,6 +1505,75 @@ void Slam3dLocalizer::publishDiagnostic(
     keyValue(
       "registration_backend_runtime_ms",
       std::to_string(registration != nullptr ? registration->backend_runtime_ms : 0.0)));
+  status.values.push_back(
+    keyValue(
+      "registration_backend_name",
+      registration != nullptr ? registration->backend_name : "not_run"));
+  status.values.push_back(
+    keyValue(
+      "registration_backend_is_cuda",
+      registration != nullptr && registration->backend_is_cuda ? "true" : "false"));
+  status.values.push_back(
+    keyValue(
+      "registration_backend_first_call",
+      registration != nullptr && registration->backend_first_call ? "true" : "false"));
+  status.values.push_back(
+    keyValue(
+      "registration_backend_iterations",
+      std::to_string(registration != nullptr ? registration->iterations : 0)));
+  status.values.push_back(
+    keyValue(
+      "registration_backend_initialization_runtime_ms",
+      std::to_string(
+        registration != nullptr ? registration->backend_initialization_runtime_ms : 0.0)));
+  status.values.push_back(
+    keyValue(
+      "registration_backend_align_runtime_ms",
+      std::to_string(registration != nullptr ? registration->align_runtime_ms : 0.0)));
+  status.values.push_back(
+    keyValue(
+      "registration_target_update_runtime_ms",
+      std::to_string(
+        registration != nullptr ? registration->target_update_runtime_ms : 0.0)));
+  status.values.push_back(
+    keyValue(
+      "registration_target_cache_hit",
+      registration != nullptr && registration->target_reused ? "true" : "false"));
+  status.values.push_back(
+    keyValue(
+      "registration_target_revision",
+      std::to_string(registration != nullptr ? registration->target_revision : 0U)));
+  status.values.push_back(
+    keyValue(
+      "registration_target_upload_count",
+      std::to_string(registration != nullptr ? registration->target_upload_count : 0U)));
+  status.values.push_back(
+    keyValue(
+      "local_map_cache_hit",
+      registration != nullptr && registration->local_map_reused ? "true" : "false"));
+  status.values.push_back(
+    keyValue(
+      "local_map_revision",
+      std::to_string(registration != nullptr ? registration->local_map_revision : 0U)));
+  status.values.push_back(
+    keyValue(
+      "local_map_cache_hit_count",
+      std::to_string(
+        registration != nullptr ? registration->local_map_cache_hit_count : 0U)));
+  status.values.push_back(
+    keyValue(
+      "local_map_cache_miss_count",
+      std::to_string(
+        registration != nullptr ? registration->local_map_cache_miss_count : 0U)));
+  status.values.push_back(
+    keyValue(
+      "local_map_build_runtime_ms",
+      std::to_string(
+        registration != nullptr ? registration->local_map_build_runtime_ms : 0.0)));
+  status.values.push_back(
+    keyValue(
+      "local_map_rebuild_distance_m",
+      std::to_string(local_map_rebuild_distance_m_)));
   status.values.push_back(
     keyValue(
       "surfel_target_voxels",

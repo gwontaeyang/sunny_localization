@@ -32,6 +32,7 @@ slam_3d_localizer:
     scan_voxel_leaf_m: 0.25
     map_voxel_leaf_m: 0.35
     local_map_radius_m: 35.0
+    local_map_rebuild_distance_m: 0.0
     min_range_m: 0.5
     max_range_m: 80.0
     z_min_m: -5.0
@@ -47,6 +48,16 @@ slam_3d_localizer:
     transformation_epsilon: 0.001
     fitness_epsilon: 0.001
     fitness_threshold: 1.0
+    fast_gicp_num_threads: 4
+    fast_gicp_correspondence_randomness: 20
+    fast_gicp_regularization_method: PLANE
+    fast_gicp_rotation_epsilon_rad: 0.002
+    fast_vgicp_cuda_voxel_resolution_m: 1.0
+    fast_vgicp_cuda_neighbor_search_method: DIRECT1
+    fast_vgicp_cuda_neighbor_search_radius: 1.5
+    fast_vgicp_cuda_nearest_neighbor_method: CPU_PARALLEL_KDTREE
+    fast_vgicp_cuda_kernel_width: 0.5
+    fast_vgicp_cuda_kernel_max_distance: 3.0
     min_registration_inlier_ratio: 0.15
     max_registration_inlier_rmse_m: 1.5
     max_correction_translation_m: 2.0

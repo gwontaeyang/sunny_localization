@@ -16,7 +16,12 @@ def test_default_config_has_safe_registration_gates():
     frames = (params["map_frame"], params["odom_frame"], params["base_frame"])
     assert all(frames)
     assert len(set(frames)) == 3
-    assert params["registration_method"] in {"gicp", "voxel_surfel"}
+    assert params["registration_method"] in {
+        "gicp",
+        "voxel_surfel",
+        "fast_gicp",
+        "fast_vgicp_cuda",
+    }
     assert params["registration_method"] == "gicp"
     assert params["input_scan_preprocessed"] is False
     assert params["map_already_voxelized"] is False
@@ -27,8 +32,32 @@ def test_default_config_has_safe_registration_gates():
     assert params["scan_voxel_leaf_m"] > 0.0
     assert params["map_voxel_leaf_m"] > 0.0
     assert params["local_map_radius_m"] > params["max_correspondence_m"]
+    assert 0.0 <= params["local_map_rebuild_distance_m"] < params["local_map_radius_m"]
+    assert params["fast_gicp_num_threads"] >= 0
+    assert params["fast_gicp_correspondence_randomness"] >= 3
+    assert params["fast_gicp_regularization_method"] == "PLANE"
+    assert params["fast_gicp_rotation_epsilon_rad"] > 0.0
+    assert params["fast_vgicp_cuda_voxel_resolution_m"] > 0.0
+    assert params["fast_vgicp_cuda_neighbor_search_method"] in {
+        "DIRECT1",
+        "DIRECT7",
+        "DIRECT27",
+        "DIRECT_RADIUS",
+    }
+    assert params["fast_vgicp_cuda_neighbor_search_radius"] > 0.0
+    assert params["fast_vgicp_cuda_nearest_neighbor_method"] in {
+        "CPU_PARALLEL_KDTREE",
+        "GPU_BRUTEFORCE",
+        "GPU_RBF_KERNEL",
+    }
+    assert params["fast_vgicp_cuda_kernel_width"] > 0.0
+    assert params["fast_vgicp_cuda_kernel_max_distance"] > 0.0
     assert isinstance(params["cloud_subscription_reliable"], bool)
     assert params["cloud_subscription_depth"] > 0
+    assert params["require_synced_odom_for_update"] is False
+    assert params["registration_odom_topic"] == ""
+    assert params["require_exact_odom_for_update"] is False
+    assert params["odom_sync_pending_cloud_limit"] > 0
     assert params["publish_tf"] is True
     assert params["publish_identity_map_to_odom_before_localization"] is False
     assert params["publish_global_map"] is True
@@ -178,6 +207,54 @@ def test_indoor_xt32_no_wheel_replay_profile_matches_verified_contract():
     }
 
 
+def test_gangnam_lio_profile_uses_raw_imu_without_wheel_or_cv_fallback():
+    data = yaml.safe_load(
+        (PACKAGE_ROOT / "config" / "slam_3d_lio_gangnam.yaml").read_text()
+    )
+    lio = data["slam_3d_lio_odometry"]["ros__parameters"]
+    localizer = data["slam_3d_localizer"]["ros__parameters"]
+
+    assert lio["cloud_topic"] == "/hesai/center/lidar_points"
+    assert lio["imu_topic"] == "/imu/data"
+    assert lio["scan_odom_topic"] == "/localization_3d/lio/scan_odom"
+    assert lio["imu_frame"] == "cv7_link"
+    assert lio["point_time_field"] == "timestamp"
+    assert lio["point_time_mode"] == "absolute_seconds"
+    assert lio["imu_to_base_rpy_deg"] == [0.0, 0.0, 0.0]
+    assert lio["imu_position_in_base_m"] == [0.0, 0.0, 1.20984]
+    assert lio["wheel_correction_enabled"] is False
+    assert lio["publish_tf"] is True
+
+    assert localizer["cloud_topic"] == lio["deskewed_cloud_topic"]
+    assert localizer["odom_topic"] == lio["odom_topic"]
+    assert localizer["registration_odom_topic"] == lio["scan_odom_topic"]
+    assert localizer["require_synced_odom_for_update"] is True
+    assert localizer["require_exact_odom_for_update"] is True
+    assert localizer["registration_method"] == "gicp"
+    assert localizer["use_constant_velocity_prediction"] is False
+    assert localizer["publish_tf"] is True
+    assert localizer["publish_identity_map_to_odom_before_localization"] is False
+    assert localizer["input_scan_preprocessed"] is True
+    assert localizer["map_path"] == ""
+    assert localizer["odom_frame"] == lio["odom_frame"]
+    assert localizer["base_frame"] == lio["base_frame"]
+
+
+def test_lio_launch_starts_only_lio_and_prior_map_localization():
+    launch_text = (
+        PACKAGE_ROOT / "launch" / "slam_3d_lio_localization.launch.py"
+    ).read_text()
+
+    assert 'executable="slam_3d_lio_odometry_node"' in launch_text
+    assert 'executable="slam_3d_localizer_node"' in launch_text
+    assert launch_text.count("Node(") == 2
+    assert '"slam_3d_lio_gangnam.yaml"' in launch_text
+    assert '"gangnam_floor_person_filtered_nav_classified_rgb.pcd"' in launch_text
+    assert "odom_estimation" not in launch_text
+    assert "robot_localization" not in launch_text
+    assert "IncludeLaunchDescription" not in launch_text
+
+
 def test_launch_defaults_to_classified_rgb_map_and_does_not_start_hardware():
     launch_text = (
         PACKAGE_ROOT / "launch" / "slam_3d_localization.launch.py"
@@ -265,7 +342,7 @@ def test_forced_update_requests_remain_pending_until_registration_acceptance():
     ).read_text()
 
     registration = implementation.index(
-        "const RegistrationOutcome registration = registerScanToMap("
+        "RegistrationOutcome registration = registerScanToMap("
     )
     rejected_branch = implementation.index("if (!accepted) {", registration)
     rejected_return = implementation.index("return;", rejected_branch)
@@ -480,3 +557,75 @@ def test_cloud_freshness_parameter_and_diagnostics_contract():
         "stale_cloud_drop_count",
     ):
         assert f'"{key}"' in implementation
+
+
+def test_synchronized_odom_update_policy_is_opt_in_and_fail_closed():
+    header = (
+        PACKAGE_ROOT
+        / "include"
+        / "slam_3d_localization"
+        / "slam_3d_localizer.hpp"
+    ).read_text()
+    implementation = (
+        PACKAGE_ROOT / "src" / "slam_3d_localizer.cpp"
+    ).read_text()
+    callback = implementation[
+        implementation.index("void Slam3dLocalizer::cloudCallback(")
+        : implementation.index("void Slam3dLocalizer::publishResult(")
+    ]
+
+    assert "bool require_synced_odom_for_update_{false};" in header
+    assert (
+        'declare_parameter<bool>(\n'
+        '    "require_synced_odom_for_update", require_synced_odom_for_update_)'
+        in implementation
+    )
+    odom_lookup = callback.index("odom_buffer_.lookup(cloud_stamp_ns)")
+    fail_closed = callback.index(
+        "if ((require_synced_odom_for_update_ && !have_synced_odom) ||",
+        odom_lookup,
+    )
+    fail_closed_return = callback.index("return;", fail_closed)
+    registration = callback.index("registerScanToMap(", fail_closed_return)
+
+    assert odom_lookup < fail_closed < fail_closed_return < registration
+    assert "waiting_for_synchronized_lio_odom" in callback[
+        fail_closed:fail_closed_return
+    ]
+    assert "map_T_base_ =" not in callback[fail_closed:fail_closed_return]
+    assert "map_odom_transform_cache_.reanchor(" not in callback[
+        fail_closed:fail_closed_return
+    ]
+    assert '"require_synced_odom_for_update"' in implementation
+    assert '"unsynchronized_cloud_drop_count"' in implementation
+
+
+def test_lio_scan_posterior_uses_separate_exact_sync_channel():
+    header = (
+        PACKAGE_ROOT
+        / "include"
+        / "slam_3d_localization"
+        / "slam_3d_localizer.hpp"
+    ).read_text()
+    localizer = (PACKAGE_ROOT / "src" / "slam_3d_localizer.cpp").read_text()
+    lio = (PACKAGE_ROOT / "src" / "lio_odometry.cpp").read_text()
+
+    assert "registration_odom_topic_" in header
+    assert "require_exact_odom_for_update_" in header
+    assert "processPendingClouds" in header
+    assert '"registration_odom_topic"' in localizer
+    assert "odom_lookup.mode == OdomLookupMode::kExact" in localizer
+    assert '"waiting_for_exact_scan_odom"' in localizer
+    scan_output = lio.index("bool LioOdometry::publishScanOutputsIfCurrent(")
+    revision_gate = lio.index(
+        "state_revision_ != expected_state_revision", scan_output
+    )
+    scan_pose_publish = lio.index(
+        "scan_odom_pub_->publish(odometry_message);", revision_gate
+    )
+    cloud_publish = lio.index(
+        "deskewed_cloud_pub_->publish(cloud_message);", scan_pose_publish
+    )
+
+    assert revision_gate < scan_pose_publish < cloud_publish
+    assert "publishScanOutputsIfCurrent(" in lio[:scan_output]
