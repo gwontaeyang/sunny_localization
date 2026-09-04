@@ -25,6 +25,7 @@ def launch_setup(context, *args, **kwargs):
     map_yaml_file = PathJoinSubstitution(
         [EnvironmentVariable("HOME"), ".ros", "db", "maps", LaunchConfiguration("map")]
     )
+    robot_model = LaunchConfiguration("robot_model").perform(context).strip().lower()
     system_type = LaunchConfiguration("type").perform(context).strip().lower() or "apart"
     mode = LaunchConfiguration("mode").perform(context).strip().upper() or "NAV"
 
@@ -46,7 +47,35 @@ def launch_setup(context, *args, **kwargs):
         ),
     ]
 
-    if system_type == "apart" and mode == "NAV":
+    if robot_model == "nd" and mode == "NAV":
+        map_publisher_node = Node(
+            package="lio_sam",
+            executable="occupancy_map_publisher.py",
+            name="lio_sam_occupancy_map_publisher",
+            output="screen",
+            parameters=[
+                {"use_sim_time": use_sim_time},
+                {"yaml_filename": map_yaml_file},
+                {"frame_id": "map"},
+                {"topic_name": "map"},
+                {"publish_period": 1.0},
+            ],
+        )
+        actions.extend(
+            [
+                create_package_launch(
+                    "lio_sam",
+                    "run_localization.launch.py",
+                    {
+                        "use_sim_time": use_sim_time,
+                        "use_rviz": "false",
+                        "publish_static_map_to_odom": "false",
+                    },
+                ),
+                map_publisher_node,
+            ]
+        )
+    elif system_type == "apart" and mode == "NAV":
         actions.append(
             create_package_launch(
                 "amcl",
