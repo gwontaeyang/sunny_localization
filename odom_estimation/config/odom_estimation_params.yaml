@@ -1,6 +1,5 @@
 odom_estimation_node:
   ros__parameters:
-    map_frame_id: "map"
     odom_frame_id: "odom"
     base_link_frame_id: "base_link"
     pose_command_topic: "~/set_pose"
@@ -8,13 +7,61 @@ odom_estimation_node:
     landmark_observation_topic: "~/landmark_observation"
     log_level: "info" # Options: trace, debug, info, warn, err, critical, off
 
-    # Seed only the EKF gyro z-bias state. Raw /imu/data remains unchanged and
-    # the stationary online bias update continues from this initial value.
+    # Seed the EKF gyro x/y/z bias states. Raw /imu/data remains unchanged and
+    # the stationary online 3-axis bias update continues from these values.
     load_initial_gyro_bias: false
     gyro_bias_yaml_path: "~/.ros/imu_calibration.yaml"
     allow_initial_gyro_bias_fallback: false
     gyro_bias_fallback_yaml_path: ""
     max_initial_gyro_bias_abs: 0.05  # rad/s; configuration sanity limit
+
+    # Rotate the complete IMU angular-velocity vector into this robot frame.
+    # /imu/data.header.frame_id -> base_link must exist in TF and match the
+    # physical mounting (REP-103: x forward, y left, z up).
+    imu_target_frame: "base_link"
+    imu_tf_lookup_timeout: 0.05       # s
+
+    # Wheel odometry: only twist.twist.linear.x is fused. Wheel pose, yaw and
+    # angular.z are deliberately excluded.
+    use_wheel_message_covariance: true
+    wheel_velocity_noise: 0.0016      # (m/s)^2 fallback variance
+    wheel_min_velocity_variance: 1.0e-6
+
+    # false: planar x/y/yaw only; z/roll/pitch remain exactly zero.
+    # true: propagate roll/pitch/yaw jointly and project wheel speed into z.
+    enable_3d_estimation: true
+
+    # In 3D mode all base_link angular-velocity axes jointly propagate the
+    # attitude quaternion. IMU orientation is deliberately ignored on every axis.
+    use_imu_message_covariance: true
+    gyro_noise: 7.615435494667714e-5        # (rad/s)^2, 0.5 deg/s std
+    gyro_min_variance: 1.0e-8               # (rad/s)^2
+    gyro_bias_random_walk: 7.615435494667715e-9 # (rad/s)^2/s
+    initial_yaw_covariance: 0.030461741978670857 # rad^2, 10 deg std
+    initial_gyro_bias_covariance: 7.615435494667714e-5 # (rad/s)^2
+    initial_z_covariance: 0.04                         # m^2, 0.2 m std
+    initial_roll_pitch_covariance: 0.007615435494667714 # rad^2, 5 deg std
+    vertical_motion_noise: 0.0025                      # (m/s)^2, 0.05 m/s std
+    roll_pitch_process_noise: 7.615435494667714e-5     # rad^2/s
+    max_prediction_dt: 0.5                  # s
+    reject_zero_timestamp: true
+
+    # Initial and online zero-angular-rate bias updates require both wheel and
+    # gyro stationary conditions to persist for the configured duration.
+    gyro_initial_bias_enabled: true
+    gyro_initial_bias_duration: 2.0         # s
+    gyro_initial_bias_min_samples: 100
+    gyro_stationary_threshold: 0.03490658503988659 # rad/s, 3-axis magnitude
+    wheel_stationary_threshold: 0.005       # m/s
+    # wheel angular.z remains OFF as a fusion source; it is only a veto that
+    # prevents in-place/slow turns from being learned as gyro bias.
+    wheel_stationary_angular_threshold: 0.001 # rad/s
+    stationary_gyro_bias_variance: 1.2184696791468346e-5 # (rad/s)^2
+
+    # Soft non-holonomic model: mean body vy is zero, but this process noise
+    # allows covariance to represent lateral slip.
+    vy_zero_constraint_enabled: true
+    vy_zero_constraint_noise: 0.04          # (m/s)^2
     
     # Robot pose publishing timeout (in milliseconds)
     robot_pose_timeout: 100.0  # Default: 100ms timeout for pose publishing check

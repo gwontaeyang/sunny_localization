@@ -95,9 +95,11 @@ inline std::array<double, 3> loadGyroBiasCalibration(
                 throw std::runtime_error("gyro_bias contains a non-finite value: " + resolved_path);
             }
         }
-        if (std::abs(bias[2]) > max_abs_z_rad_s) {
-            throw std::runtime_error(
-                "gyro_bias.z exceeds max_initial_gyro_bias_abs: " + resolved_path);
+        for (double value : bias) {
+            if (std::abs(value) > max_abs_z_rad_s) {
+                throw std::runtime_error(
+                    "gyro_bias axis exceeds max_initial_gyro_bias_abs: " + resolved_path);
+            }
         }
 
         return bias;

@@ -7,28 +7,19 @@
 #include <mutex>
 #include <atomic>
 #include <functional>
+#include <optional>
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
-#include "geometry_msgs/msg/pose_stamped.hpp"
-#include "geometry_msgs/msg/twist_with_covariance_stamped.hpp"
-#include "geometry_msgs/msg/quaternion.hpp"
-#include "geometry_msgs/msg/vector3.hpp"
 #include "geometry_msgs/msg/twist.hpp"
-#include "sensor_msgs/msg/laser_scan.hpp"
-#include "sensor_msgs/msg/point_cloud2.hpp"
+#include "geometry_msgs/msg/transform_stamped.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "nav_msgs/msg/odometry.hpp"
-#include "nav_msgs/msg/occupancy_grid.hpp"
-#include "tf2_ros/transform_broadcaster.h"
-#include "tf2_ros/transform_listener.h"
-#include "tf2_ros/buffer.h"
 
 #include "logger/logger.hpp"
-#include "diagnostic/diagnostic_manager.hpp"
 
 #include "odom_estimation/odom_estimator/odom_estimator_types.hpp"
 
@@ -48,7 +39,6 @@ public:
      */
     OdomEstimatorBase(rclcpp_lifecycle::LifecycleNode* node,
                   std::shared_ptr<spdlog::logger> logger,
-                  std::shared_ptr<diagnostic::DiagnosticManager> diagnostic_manager,
                   const Params& params);
 
     /**
@@ -93,8 +83,6 @@ public:
      * @return True if initialized
      */
     inline bool isInitialized() const { return is_init_.load(); }
-    inline bool isMapToOdomInitialized() const { return map_to_odom_initialized_; }
-    // inline bool isDoingOdomEstimation() const { return is_doing_odom_estimation_.load(); }
     
     /**
      * @brief Check if the external landmark is initialized in the state.
@@ -102,15 +90,6 @@ public:
      */
     virtual bool isLandmarkInitialized() const = 0;
     
-    /**
-     * @brief Get map to odom transform safely (thread-safe copy)
-     * @return Thread-safe copy of the transform
-     */
-    geometry_msgs::msg::TransformStamped getMapToOdomTransform() {
-        std::lock_guard<std::mutex> lock(map_to_odom_mutex_);
-        return map_to_odom_transform_;
-    }
-
     /**
      * @brief Get odom to base_link transform
      * @return Transform from odom to base_link
@@ -122,12 +101,6 @@ public:
      * @return Current state
      */
     State getCurrentState();
-    
-    /**
-     * @brief Update state timestamp without modifying state estimate
-     * @param new_time New timestamp for the state
-     */
-    void updateStateTime(const rclcpp::Time& new_time);
     
     /**
      * @brief Get external landmark state (position, orientation, covariance).
@@ -145,13 +118,6 @@ public:
      */
     virtual void disableLandmarkCorrection() = 0;
     
-    /**
-     * @brief Check if external landmark correction is active.
-     * @return true if active
-     */
-    bool isLandmarkCorrectionEnabled() const { return is_landmark_correction_enabled_.load(); }
-
-
     // Notification system
     using NotifyCallback = std::function<void(const std::string&, const std::any&)>;
     
@@ -164,13 +130,11 @@ public:
 protected:
     rclcpp_lifecycle::LifecycleNode* node_;
     std::shared_ptr<spdlog::logger> logger_;
-    std::shared_ptr<diagnostic::DiagnosticManager> diagnostic_manager_;
     
     // Parameters
     const Params& params_;
     
     // Frame IDs
-    std::string map_frame_id_;
     std::string odom_frame_id_;
     std::string base_link_frame_id_;
 
@@ -179,20 +143,11 @@ protected:
     std::atomic<bool> is_doing_odom_estimation_;
     std::atomic<bool> is_landmark_correction_enabled_;
     
-    // Map to Odom transform (for localization correction)
-    geometry_msgs::msg::TransformStamped map_to_odom_transform_;
-    bool map_to_odom_initialized_;
-    
     // Current state
     State current_state_;
-    Eigen::MatrixXd Qu_;
-
-    // Update state
-    Eigen::MatrixXd Qr_;
 
     // mutex
     std::mutex state_mutex_;
-    std::mutex map_to_odom_mutex_;
 
     // Notification callback
     NotifyCallback notify_callback_;
@@ -212,9 +167,6 @@ protected:
     }
 
     nav_msgs::msg::Odometry state2Msg();
-    void updateMapToOdomTransform(Eigen::Isometry3d& map_to_odom, rclcpp::Time time);
-    void updateMapToOdomTransform(const nav_msgs::msg::Odometry::SharedPtr odom);
-    void updateMapToOdomTransform(Eigen::Vector3d pos, Eigen::Quaterniond angle, rclcpp::Time time);
 };
 
 } // namespace odom_estimation

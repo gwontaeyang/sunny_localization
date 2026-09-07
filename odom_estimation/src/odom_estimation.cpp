@@ -1,12 +1,11 @@
-#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
-#include "tf2/LinearMath/Quaternion.h"
-#include "lifecycle_msgs/msg/state.hpp"
 #include "ament_index_cpp/get_package_share_directory.hpp"
-#include "rmw/qos_profiles.h"
 
+#include <cmath>
 #include <filesystem>
+#include <stdexcept>
 
 #include "odom_estimation/odom_estimation.hpp"
+#include "odom_estimation/imu_transform.hpp"
 #include "odom_estimation/imu_bias_config.hpp"
 #include "odom_estimation/odom_estimator_factory.hpp"
 
@@ -15,11 +14,10 @@ namespace odom_estimation {
 
 OdomEstimation::OdomEstimation()
     : rclcpp_lifecycle::LifecycleNode("odom_estimation_node")
-    , is_forward_(true)
     , using_landmark_correction_(false)
 {
     logger_ = gole::logger::Logger::createPackageLogger(this->get_name(), spdlog::level::level_enum::info);
-    logger_->info("odom estimation starting...");
+    logger_->info("localization starting...");
     transform_last_log_time_ = std::chrono::steady_clock::now();
 }
 
@@ -31,7 +29,7 @@ rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn
 OdomEstimation::on_configure(const rclcpp_lifecycle::State & /*state*/)
 {
     try {
-        logger_->info("Configuring Odom Estimation...");
+        logger_->info("Configuring OdomEstimation...");
         setupParameters();
         gole::logger::Logger::setLogLevel(this->get_name(), spdlog::level::from_str(declare_parameter("log_level", "info")));
 
@@ -46,7 +44,7 @@ OdomEstimation::on_configure(const rclcpp_lifecycle::State & /*state*/)
 
         initialize();
 
-        logger_->info("Odom Estimation configured successfully");
+        logger_->info("OdomEstimation configured successfully");
         return rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS;
     }
     catch (const std::exception& e) {
@@ -58,7 +56,7 @@ OdomEstimation::on_configure(const rclcpp_lifecycle::State & /*state*/)
 rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn
 OdomEstimation::on_activate(const rclcpp_lifecycle::State & /*state*/)
 {
-    logger_->info("Activating Odom Estimation...");
+    logger_->info("Activating OdomEstimation...");
 
     // Activate publishers
     pose_pub_->on_activate();
@@ -77,14 +75,14 @@ OdomEstimation::on_activate(const rclcpp_lifecycle::State & /*state*/)
         std::bind(&OdomEstimation::timerCallback, this)
     );
 
-    logger_->info("Odom Estimation activated successfully");
+    logger_->info("OdomEstimation activated successfully");
     return rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS;
 }
 
 rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn
 OdomEstimation::on_deactivate(const rclcpp_lifecycle::State & /*state*/)
 {
-    logger_->info("Deactivating Odom Estimation...");
+    logger_->info("Deactivating OdomEstimation...");
 
     // Stop timers when deactivating
     if (transform_timer_) {
@@ -103,14 +101,14 @@ OdomEstimation::on_deactivate(const rclcpp_lifecycle::State & /*state*/)
         diagnostic_manager_->deactivate();
     }
 
-    logger_->info("Odom Estimation deactivated successfully");
+    logger_->info("OdomEstimation deactivated successfully");
     return rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS;
 }
 
 rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn
 OdomEstimation::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
 {
-    logger_->info("Cleaning up Odom Estimation...");
+    logger_->info("Cleaning up OdomEstimation...");
     
     // Reset all components
     odom_sub_.reset();
@@ -118,14 +116,14 @@ OdomEstimation::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
     pose_command_sub_.reset();
     odom_estimator_.reset();
 
-    logger_->info("Odom Estimation cleaned up successfully");
+    logger_->info("OdomEstimation cleaned up successfully");
     return rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS;
 }
 
 rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn
 OdomEstimation::on_shutdown(const rclcpp_lifecycle::State & /*state*/)
 {
-    logger_->info("Shutting down Odom Estimation...");
+    logger_->info("Shutting down OdomEstimation...");
     
     // Reset all components
     odom_sub_.reset();
@@ -133,7 +131,7 @@ OdomEstimation::on_shutdown(const rclcpp_lifecycle::State & /*state*/)
     pose_command_sub_.reset();
     odom_estimator_.reset();
 
-    logger_->info("Odom Estimation shut down successfully");
+    logger_->info("OdomEstimation shut down successfully");
     return rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS;
 }
 
@@ -148,12 +146,8 @@ void OdomEstimation::setupParameters()
     
     std::string odom_estimator_type_str = declare_parameter("odom_estimator_type", std::string("EKF"));
     odom_estimator_type_ = stringToOdomEstimatorType(odom_estimator_type_str);
-    logger_->info("Odom Estimation parameter 'odom_estimator_type' set to '{}'", odom_estimator_type_str);
+    logger_->info("OdomEstimation parameter 'odom_estimator_type' set to '{}'", odom_estimator_type_str);
     
-    // General localization parameters
-    params_->is_forward = true;  // Will be updated by topic callback
-    params_->using_landmark_correction = false;  // Will be updated by topic callback
-
     params_->load_initial_gyro_bias = declare_parameter("load_initial_gyro_bias", false);
     params_->gyro_bias_yaml_path = declare_parameter(
         "gyro_bias_yaml_path", std::string("~/.ros/imu_calibration.yaml"));
@@ -163,6 +157,96 @@ void OdomEstimation::setupParameters()
         "gyro_bias_fallback_yaml_path", std::string(""));
     params_->max_initial_gyro_bias_abs = declare_parameter(
         "max_initial_gyro_bias_abs", 0.05);
+    params_->imu_target_frame = declare_parameter(
+        "imu_target_frame", std::string("base_link"));
+    params_->imu_tf_lookup_timeout = declare_parameter("imu_tf_lookup_timeout", 0.05);
+    params_->use_wheel_message_covariance = declare_parameter(
+        "use_wheel_message_covariance", true);
+    params_->wheel_velocity_noise = declare_parameter("wheel_velocity_noise", 0.0016);
+    params_->wheel_min_velocity_variance = declare_parameter(
+        "wheel_min_velocity_variance", 1.0e-6);
+    params_->enable_3d_estimation = declare_parameter(
+        "enable_3d_estimation", false);
+    params_->use_imu_message_covariance = declare_parameter(
+        "use_imu_message_covariance", true);
+    params_->gyro_noise = declare_parameter("gyro_noise", 7.615435494667714e-5);
+    params_->gyro_min_variance = declare_parameter("gyro_min_variance", 1.0e-8);
+    params_->gyro_bias_random_walk = declare_parameter(
+        "gyro_bias_random_walk", 7.615435494667715e-9);
+    params_->initial_yaw_covariance = declare_parameter(
+        "initial_yaw_covariance", 0.030461741978670857);
+    params_->initial_gyro_bias_covariance = declare_parameter(
+        "initial_gyro_bias_covariance", 7.615435494667714e-5);
+    params_->initial_z_covariance = declare_parameter(
+        "initial_z_covariance", 0.04);
+    params_->initial_roll_pitch_covariance = declare_parameter(
+        "initial_roll_pitch_covariance", 0.007615435494667714);
+    params_->vertical_motion_noise = declare_parameter(
+        "vertical_motion_noise", 0.0025);
+    params_->roll_pitch_process_noise = declare_parameter(
+        "roll_pitch_process_noise", 7.615435494667714e-5);
+    params_->gyro_initial_bias_enabled = declare_parameter(
+        "gyro_initial_bias_enabled", true);
+    params_->gyro_initial_bias_duration = declare_parameter(
+        "gyro_initial_bias_duration", 2.0);
+    params_->gyro_initial_bias_min_samples = declare_parameter(
+        "gyro_initial_bias_min_samples", 100);
+    params_->gyro_stationary_threshold = declare_parameter(
+        "gyro_stationary_threshold", 0.03490658503988659);
+    params_->wheel_stationary_threshold = declare_parameter(
+        "wheel_stationary_threshold", 0.005);
+    params_->wheel_stationary_angular_threshold = declare_parameter(
+        "wheel_stationary_angular_threshold", 0.001);
+    params_->stationary_gyro_bias_variance = declare_parameter(
+        "stationary_gyro_bias_variance", 1.2184696791468346e-5);
+    params_->max_prediction_dt = declare_parameter("max_prediction_dt", 0.5);
+    params_->reject_zero_timestamp = declare_parameter("reject_zero_timestamp", true);
+    params_->vy_zero_constraint_enabled = declare_parameter(
+        "vy_zero_constraint_enabled", true);
+    params_->vy_zero_constraint_noise = declare_parameter(
+        "vy_zero_constraint_noise", 0.04);
+
+    const auto require_positive = [](double value, const char* name) {
+        if (!std::isfinite(value) || value <= 0.0) {
+            throw std::invalid_argument(std::string(name) + " must be finite and > 0");
+        }
+    };
+    require_positive(params_->imu_tf_lookup_timeout, "imu_tf_lookup_timeout");
+    require_positive(params_->wheel_velocity_noise, "wheel_velocity_noise");
+    require_positive(params_->wheel_min_velocity_variance, "wheel_min_velocity_variance");
+    require_positive(params_->gyro_noise, "gyro_noise");
+    require_positive(params_->gyro_min_variance, "gyro_min_variance");
+    require_positive(params_->gyro_bias_random_walk, "gyro_bias_random_walk");
+    require_positive(params_->initial_yaw_covariance, "initial_yaw_covariance");
+    require_positive(
+        params_->initial_gyro_bias_covariance, "initial_gyro_bias_covariance");
+    require_positive(params_->initial_z_covariance, "initial_z_covariance");
+    require_positive(
+        params_->initial_roll_pitch_covariance, "initial_roll_pitch_covariance");
+    require_positive(params_->vertical_motion_noise, "vertical_motion_noise");
+    require_positive(params_->roll_pitch_process_noise, "roll_pitch_process_noise");
+    require_positive(params_->gyro_initial_bias_duration, "gyro_initial_bias_duration");
+    require_positive(params_->gyro_stationary_threshold, "gyro_stationary_threshold");
+    require_positive(params_->wheel_stationary_threshold, "wheel_stationary_threshold");
+    require_positive(
+        params_->wheel_stationary_angular_threshold,
+        "wheel_stationary_angular_threshold");
+    require_positive(
+        params_->stationary_gyro_bias_variance, "stationary_gyro_bias_variance");
+    require_positive(params_->max_prediction_dt, "max_prediction_dt");
+    require_positive(params_->vy_zero_constraint_noise, "vy_zero_constraint_noise");
+    if (params_->imu_target_frame.empty()) {
+        throw std::invalid_argument("imu_target_frame must not be empty");
+    }
+    if (params_->gyro_initial_bias_min_samples <= 0) {
+        throw std::invalid_argument("gyro_initial_bias_min_samples must be > 0");
+    }
+
+    logger_->info(
+        "Odometry motion mode: {}",
+        params_->enable_3d_estimation
+            ? "3D (x/y/z + roll/pitch/yaw)"
+            : "planar (x/y/yaw; z/roll/pitch constrained to zero)");
 
     if (params_->load_initial_gyro_bias) {
         std::string selected_path = params_->gyro_bias_yaml_path;
@@ -183,11 +267,14 @@ void OdomEstimation::setupParameters()
         const auto gyro_bias = loadGyroBiasCalibration(
             selected_path,
             params_->max_initial_gyro_bias_abs);
+        params_->initial_gyro_bias_x = gyro_bias[0];
+        params_->initial_gyro_bias_y = gyro_bias[1];
         params_->initial_gyro_bias_z = gyro_bias[2];
         logger_->info(
-            "Initial gyro bias enabled: z={:.9f} rad/s ({:.6f} deg/s), source='{}'",
+            "Initial gyro bias enabled: [{:.9f}, {:.9f}, {:.9f}] rad/s, source='{}'",
+            params_->initial_gyro_bias_x,
+            params_->initial_gyro_bias_y,
             params_->initial_gyro_bias_z,
-            params_->initial_gyro_bias_z * 180.0 / M_PI,
             expandUserPath(selected_path));
     } else {
         logger_->info("Initial gyro bias YAML loading disabled; EKF bias starts at 0 rad/s");
@@ -243,27 +330,21 @@ void OdomEstimation::setupSubscribers()
         pose_command_topic_, rclcpp::QoS(10),
         std::bind(&OdomEstimation::poseCommandCallback, this, std::placeholders::_1));
 
-    // Create is_forward subscriber
-    is_forward_sub_ = create_subscription<std_msgs::msg::Bool>(
-        "task_manager_node/is_forward", rclcpp::QoS(10).reliable().transient_local(),
-        std::bind(&OdomEstimation::isForwardCallback, this, std::placeholders::_1));
-    logger_->info("Created is_forward subscriber");
-
     landmark_correction_enable_sub_ = create_subscription<std_msgs::msg::Bool>(
         landmark_correction_enable_topic_, rclcpp::QoS(10).reliable().transient_local(),
         std::bind(&OdomEstimation::landmarkCorrectionEnableCallback, this, std::placeholders::_1));
     logger_->info("Created landmark correction enable subscriber");
 
-    logger_->info("Subscribers created with synchronized odom and IMU filter");
+    logger_->info("Subscribers created");
 }
 
 bool OdomEstimation::initialize()
 {
-    logger_->info("Starting odom_estimator initialization process...");
+    logger_->info("Starting localizer initialization process...");
 
-    // Create appropriate odom_estimator based on odom_estimator_type parameter
+    // Create appropriate localizer based on odom_estimator_type parameter
     std::string odom_estimator_type_str = odomEstimatorTypeToString(odom_estimator_type_);
-    logger_->info("Requested odom_estimator type: '{}'",  odom_estimator_type_str);
+    logger_->info("Requested localizer type: '{}'",  odom_estimator_type_str);
 
     // Create diagnostic manager with lifecycle node
     double robot_pose_timeout_ms = declare_parameter("robot_pose_timeout", 100.0);
@@ -311,9 +392,10 @@ bool OdomEstimation::initialize()
         }
     );
 
-    odom_estimator_ = OdomEstimatorFactory::createOdomEstimator(odom_estimator_type_str, this, logger_, diagnostic_manager_, *params_);
+    odom_estimator_ = OdomEstimatorFactory::createOdomEstimator(
+        odom_estimator_type_str, this, logger_, *params_);
 
-    logger_->info("Initializing odom_estimator components...");
+    logger_->info("Initializing localizer components...");
     odom_estimator_->initialize();
 
     logger_->info("Setting default initial pose...");
@@ -331,8 +413,8 @@ bool OdomEstimation::initialize()
         }
     );
 
-    logger_->info("OdomEstimator successfully started in '{}' mode", odom_estimator_type_str);
-    logger_->info("Localization initialization completed successfully");
+    logger_->info("Localizer successfully started in '{}' mode", odom_estimator_type_str);
+    logger_->info("OdomEstimation initialization completed successfully");
 
     return true;
 }
@@ -366,9 +448,15 @@ void OdomEstimation::defaultInitPose()
     // Set diagonal elements for position (x, y) and orientation (yaw)
     msg->pose.covariance[0] = 0.1;   // x variance
     msg->pose.covariance[7] = 0.1;   // y variance 
-    msg->pose.covariance[35] = 0.1;  // yaw variance
+    msg->pose.covariance[14] = params_->enable_3d_estimation
+        ? params_->initial_z_covariance : 0.0;
+    msg->pose.covariance[21] = params_->enable_3d_estimation
+        ? params_->initial_roll_pitch_covariance : 0.0;
+    msg->pose.covariance[28] = params_->enable_3d_estimation
+        ? params_->initial_roll_pitch_covariance : 0.0;
+    msg->pose.covariance[35] = params_->initial_yaw_covariance;
     
-    // Process the default initial pose through odom_estimator
+    // Process the default initial pose through localizer
     odom_estimator_->processInitialPose(msg);
     
     logger_->info("Default initial pose set successfully");
@@ -381,19 +469,20 @@ void OdomEstimation::defaultInitPose()
 void OdomEstimation::timerCallback()
 {
     auto now = std::chrono::steady_clock::now();
-    // Only publish map->odom transform if odom_estimator is initialized
+    // Only publish odom->base_link after the estimator is initialized.
     if (!odom_estimator_) {
         if ((now - transform_last_log_time_) > std::chrono::seconds(1)) {
-            logger_->warn("[timerCallback] OdomEstimator instance is null, cannot publish transform");
+            logger_->warn("[timerCallback] Localizer instance is null, cannot publish transform");
             transform_last_log_time_ = now;
         }
 
         return;
     }
 
-    if(!odom_estimator_->isInitialized() || !odom_estimator_->isMapToOdomInitialized()) {
+    if (!odom_estimator_->isInitialized()) {
         if ((now - transform_last_log_time_) > std::chrono::seconds(1)) {
-            logger_->warn("[timerCallback] OdomEstimator not initialized yet or Map to Odom transform not initialized yet, skipping transform publish");
+            logger_->warn(
+                "[timerCallback] Localizer not initialized yet, skipping transform publish");
             transform_last_log_time_ = now;
         }
 
@@ -409,58 +498,16 @@ void OdomEstimation::timerCallback()
         return;
     }
     
-    auto current_ros_time = this->now();
-    auto current_state = odom_estimator_->getCurrentState();
-    
-    // If state time is not initialized (0), reset it to current time
-    if (current_state.time.nanoseconds() == 0) {
-        odom_estimator_->updateStateTime(current_ros_time);
-        logger_->debug("[timerCallback] Initialized state time to current ROS time: {:.9f}s", current_ros_time.seconds());
-        return;
-    }
-    
-    auto time_since_last_update = (current_ros_time - current_state.time).seconds() * 1000.0; // Convert to ms
-    
-    if (time_since_last_update > 50.0) {
-        odom_estimator_->updateStateTime(current_ros_time);
-        logger_->debug("[timerCallback] Updated stale state time: {:.9f}ms since last update, state_time={:.9f}s, current_time={:.9f}s", 
-                      time_since_last_update, current_state.time.seconds(), current_ros_time.seconds());
-    }
-    
-    // Stationary detection: Check if position change is less than 20mm (0.02m)
-    double current_x = current_state.mu(0);
-    double current_y = current_state.mu(1);
-    
-    if (previous_pose_.has_value()) {
-        double dx = current_x - previous_pose_->first;
-        double dy = current_y - previous_pose_->second;
-        double distance = std::hypot(dx, dy);
-        
-        if (distance > 0.005) {  // 5mm threshold
-            logger_->debug("[timerCallback] Robot is stationary: position change = {:.9f}m (> 5mm)", distance);
-        }
-    }
-    
-    // Update previous pose for next iteration
-    previous_pose_ = std::make_pair(current_x, current_y);
+    // State time is owned by sensor-time propagation. A wall timer must never
+    // overwrite it, otherwise delayed/bagged sensor measurements become stale.
 
-    // Publish transforms: map->odom and odom->base_link
-    std::vector<geometry_msgs::msg::TransformStamped> transforms;
-    
-    // Get map->odom transform
-    // auto map_to_odom = odom_estimator_->getMapToOdomTransform();
-    // map_to_odom.header.stamp = this->now();
-    // transforms.push_back(map_to_odom);
-    
-    // Get odom->base_link transform
+    // Only odom->base_link is published here. Global localization owns
+    // map->odom when that transform is needed.
     auto odom_to_base_link = odom_estimator_->getOdomToBaselinkTransform();
     odom_to_base_link.header.stamp = this->now();
-    transforms.push_back(odom_to_base_link);
-    
-    // Send all transforms at once
-    tf_broadcaster_->sendTransform(transforms);
+    tf_broadcaster_->sendTransform(odom_to_base_link);
 
-    logger_->trace("Published map->odom and odom->base_link transforms via timer");
+    logger_->trace("Published odom->base_link transform via timer");
     
     if (using_landmark_correction_ && landmark_pose_pub_ && landmark_pose_pub_->is_activated() &&
         odom_estimator_->isLandmarkInitialized())
@@ -495,15 +542,56 @@ void OdomEstimation::wheelOdomCallback(const nav_msgs::msg::Odometry::SharedPtr 
 
 void OdomEstimation::imuOdomCallback(const sensor_msgs::msg::Imu::SharedPtr msg)
 {
+    if (!odom_estimator_ || !tf_buffer_ || !msg) {
+        return;
+    }
     logger_->debug("IMU callback received IMU data with timestamp: {:.9f}", 
                   msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9);
-    odom_estimator_->processImu(msg);
+
+    if (msg->header.frame_id.empty()) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_imu_tf_warning_time_ > std::chrono::seconds(1)) {
+            logger_->warn("Rejecting /imu/data: header.frame_id is empty");
+            last_imu_tf_warning_time_ = now;
+        }
+        return;
+    }
+
+    auto transformed = std::make_shared<sensor_msgs::msg::Imu>(*msg);
+    try {
+        if (msg->header.frame_id != params_->imu_target_frame) {
+            const auto transform = tf_buffer_->lookupTransform(
+                params_->imu_target_frame,
+                msg->header.frame_id,
+                rclcpp::Time(msg->header.stamp),
+                rclcpp::Duration::from_seconds(params_->imu_tf_lookup_timeout));
+            transformed->angular_velocity = rotateAngularVelocity(
+                msg->angular_velocity, transform.transform.rotation);
+            transformed->angular_velocity_covariance =
+                rotateAngularVelocityCovariance(
+                    msg->angular_velocity_covariance,
+                    transform.transform.rotation);
+        }
+        transformed->header.frame_id = params_->imu_target_frame;
+        odom_estimator_->processImu(transformed);
+    } catch (const std::exception& error) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_imu_tf_warning_time_ > std::chrono::seconds(1)) {
+            logger_->warn(
+                "Rejecting /imu/data: cannot rotate angular velocity from '{}' "
+                "to '{}': {}. Fix the URDF/static TF for the physical IMU mount.",
+                msg->header.frame_id,
+                params_->imu_target_frame,
+                error.what());
+            last_imu_tf_warning_time_ = now;
+        }
+    }
 }
 
 void OdomEstimation::poseCommandCallback(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg)
 {
     if (!odom_estimator_) {
-        logger_->warn("OdomEstimator instance is null, cannot publish transform");    
+        logger_->warn("OdomEstimator instance is null, cannot publish transform");
         return;
     }
 
@@ -511,12 +599,6 @@ void OdomEstimation::poseCommandCallback(const geometry_msgs::msg::PoseWithCovar
     odom_estimator_->processInitialPose(msg);
 }
 
-void OdomEstimation::isForwardCallback(const std_msgs::msg::Bool::SharedPtr msg)
-{
-    is_forward_ = msg->data;
-    logger_->info("is_forward updated to: {}", is_forward_ ? "true" : "false");
-}
- 
 void OdomEstimation::landmarkCorrectionEnableCallback(const std_msgs::msg::Bool::SharedPtr msg)
 {
     bool new_value = msg->data;
@@ -590,13 +672,12 @@ void OdomEstimation::publishObjMarker(const nav_msgs::msg::Odometry& odom)
 
 void OdomEstimation::handleNotification(const std::string& event_name, const std::any& data)
 {
-    logger_->debug("[handleNotification] Received odom_estimator notification: {}", event_name);
+    logger_->debug("[handleNotification] Received localizer notification: {}", event_name);
     nav_msgs::msg::Odometry odom;
     try {
-        if (event_name == WHEEL_PROCESSED_EVENT
+        if (event_name == ODOMETRY_UPDATED_EVENT
             || event_name == INIT_POSE_PROCESSED_EVENT
-            || event_name == IMU_PROCESSED_EVENT
-            || event_name == POINT_CLOUD_PROCESSED_EVENT)
+            || event_name == LANDMARK_PROCESSED_EVENT)
         {
             odom = std::any_cast<nav_msgs::msg::Odometry>(data);
         } 
@@ -612,21 +693,22 @@ void OdomEstimation::handleNotification(const std::string& event_name, const std
         logger_->debug("[handleNotification] updated robot pose: x={:.3f}, y={:.3f}, yaw={:.3f}°", 
                       state.mu(0), state.mu(1), state.mu(2) * 180.0 / M_PI);
 
+        if (gyro_bias_pub_ && gyro_bias_pub_->is_activated()) {
+            geometry_msgs::msg::Vector3Stamped gyro_bias;
+            gyro_bias.header = odom.header;
+            gyro_bias.vector.x = state.mu(9);
+            gyro_bias.vector.y = state.mu(10);
+            gyro_bias.vector.z = state.mu(5);
+            gyro_bias_pub_->publish(gyro_bias);
+        }
+
     } catch (const std::exception& e) {
-        logger_->error("Error handling odom_estimator notification '{}': {}", event_name, e.what());
+        logger_->error("Error handling localizer notification '{}': {}", event_name, e.what());
     }
 
     // Publish the updated pose
     if (pose_pub_ && pose_pub_->is_activated()) {
         pose_pub_->publish(odom);
-
-        if (gyro_bias_pub_ && gyro_bias_pub_->is_activated()) {
-            const auto state = odom_estimator_->getCurrentState();
-            geometry_msgs::msg::Vector3Stamped gyro_bias;
-            gyro_bias.header = odom.header;
-            gyro_bias.vector.z = state.mu(5);
-            gyro_bias_pub_->publish(gyro_bias);
-        }
         
         // Publish OBJ marker at robot pose
         publishObjMarker(odom);

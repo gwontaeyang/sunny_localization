@@ -109,6 +109,13 @@ TEST_F(ImuBiasConfigTest, RejectsOutOfRangeZBias)
     EXPECT_THROW(loadGyroBiasCalibration(path, 0.05), std::runtime_error);
 }
 
+TEST_F(ImuBiasConfigTest, RejectsOutOfRangeRollBias)
+{
+    const auto path = writeYaml("gyro_bias: [0.051, 0.0, 0.0]\n");
+
+    EXPECT_THROW(loadGyroBiasCalibration(path, 0.05), std::runtime_error);
+}
+
 TEST_F(ImuBiasConfigTest, RejectsMissingFile)
 {
     EXPECT_THROW(
