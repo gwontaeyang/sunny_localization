@@ -103,7 +103,7 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
   publish_tf_ = declare_parameter<bool>("publish_tf", true);
   publish_identity_map_to_odom_before_localization_ = declare_parameter<bool>(
     "publish_identity_map_to_odom_before_localization", false);
-  publish_local_map_ = declare_parameter<bool>("publish_local_map", true);
+  publish_local_map_ = declare_parameter<bool>("publish_local_map", publish_local_map_);
   publish_global_map_ = declare_parameter<bool>("publish_global_map", true);
   input_scan_preprocessed_ = declare_parameter<bool>(
     "input_scan_preprocessed", input_scan_preprocessed_);
@@ -204,10 +204,11 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
       }
       return static_cast<std::size_t>(value);
     };
+  // Coarse surfels retain several points after the 0.8 m cloud voxel filter.
   surfel_config_.voxel_size = declare_parameter<double>(
-    "surfel_voxel_size_m", surfel_config_.voxel_size);
+    "surfel_voxel_size_m", 2.0);
   surfel_config_.min_points_per_voxel = declare_positive_size(
-    "surfel_min_points_per_voxel", surfel_config_.min_points_per_voxel);
+    "surfel_min_points_per_voxel", 3U);
   surfel_config_.max_planarity_ratio = declare_parameter<double>(
     "surfel_max_planarity_ratio", surfel_config_.max_planarity_ratio);
   surfel_config_.min_tangent_variance = declare_parameter<double>(
@@ -215,17 +216,17 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
   surfel_config_.max_plane_distance = declare_parameter<double>(
     "surfel_max_plane_distance_m", surfel_config_.max_plane_distance);
   surfel_config_.max_center_distance = declare_parameter<double>(
-    "surfel_max_center_distance_m", surfel_config_.max_center_distance);
+    "surfel_max_center_distance_m", 2.5);
   surfel_config_.min_correspondences = declare_positive_size(
-    "surfel_min_correspondences", surfel_config_.min_correspondences);
+    "surfel_min_correspondences", 40U);
   surfel_config_.min_correspondence_ratio = declare_parameter<double>(
     "surfel_min_correspondence_ratio", surfel_config_.min_correspondence_ratio);
   surfel_config_.huber_delta = declare_parameter<double>(
     "surfel_huber_delta_m", surfel_config_.huber_delta);
   surfel_config_.max_iterations = declare_parameter<int>(
-    "surfel_max_iterations", surfel_config_.max_iterations);
+    "surfel_max_iterations", 4);
   surfel_config_.max_backtracking_steps = declare_parameter<int>(
-    "surfel_max_backtracking_steps", surfel_config_.max_backtracking_steps);
+    "surfel_max_backtracking_steps", 2);
   surfel_config_.backtracking_factor = declare_parameter<double>(
     "surfel_backtracking_factor", surfel_config_.backtracking_factor);
   surfel_config_.rotation_convergence_rad = declare_parameter<double>(

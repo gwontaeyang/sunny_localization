@@ -89,7 +89,9 @@ ImuInitializationResult StationaryImuInitializer::evaluate() const
   const double denominator = static_cast<double>(samples_.size());
   mean_gyroscope /= denominator;
   mean_acceleration /= denominator;
-  result.gyroscope_bias_radps = mean_gyroscope;
+  if (config_.imu_bias_estimation_enabled) {
+    result.gyroscope_bias_radps = mean_gyroscope;
+  }
   result.mean_acceleration_norm_mps2 = mean_acceleration.norm();
 
   double acceleration_norm_variance = 0.0;
@@ -135,10 +137,12 @@ ImuInitializationResult StationaryImuInitializer::evaluate() const
   const Eigen::Vector3d gravity_direction_base = mean_acceleration.normalized();
   result.odom_q_base = Eigen::Quaterniond::FromTwoVectors(
     gravity_direction_base, Eigen::Vector3d::UnitZ()).normalized();
-  const Eigen::Vector3d expected_specific_force_base =
-    result.odom_q_base.conjugate() *
-    Eigen::Vector3d(0.0, 0.0, config_.gravity_mps2);
-  result.accelerometer_bias_mps2 = mean_acceleration - expected_specific_force_base;
+  if (config_.imu_bias_estimation_enabled) {
+    const Eigen::Vector3d expected_specific_force_base =
+      result.odom_q_base.conjugate() *
+      Eigen::Vector3d(0.0, 0.0, config_.gravity_mps2);
+    result.accelerometer_bias_mps2 = mean_acceleration - expected_specific_force_base;
+  }
   result.valid = result.odom_q_base.coeffs().allFinite() &&
     result.gyroscope_bias_radps.allFinite() && result.accelerometer_bias_mps2.allFinite();
   result.reason = result.valid ? "ok" : "nonfinite_initial_state";

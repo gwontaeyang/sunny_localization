@@ -56,11 +56,11 @@ Jetson AGX Orin. Build the CPU backend with
 dependency is in the sourced overlay. Keep both options off for a strict
 PCL-only build.
 
-The backend object persists across scans. Set
-`local_map_rebuild_distance_m > 0` to reuse the immutable local-map pointer and
-its CPU/GPU covariance state until that target is rebuilt; zero retains the
-legacy per-scan crop. Diagnostics expose the active backend, build revision,
-CUDA architecture metadata, native convergence/iteration result, constructor,
+The backend object persists across scans. The standard defaults set
+`local_map_rebuild_distance_m: 5.0` to reuse the immutable local-map pointer and
+its CPU/GPU covariance state until the prediction moves 5 m from the target
+center; zero requests the legacy per-scan crop. Diagnostics expose the active
+backend, build revision, CUDA architecture metadata, native convergence/iteration result, constructor,
 target-update, align and total times, and target-cache counters.
 
 FastVGICP is a voxelized objective, not a GPU implementation mathematically
@@ -70,9 +70,11 @@ be reported with comparisons. In the pinned upstream implementation,
 fixed at 20; the common post-registration overlap diagnostics remain available
 for like-for-like residual comparison. `gicp` remains the shipped default.
 
-The current Gangnam policy uses the separate wheel-free LIO launch. It starts
-only raw LiDAR+IMU odometry and prior-map localization; it does not start the
-legacy wheel/filtered-odometry nodes:
+The current compute-first Gangnam policy uses the existing wheel-free LIO
+launch, with **IMU enabled and IMU bias estimation disabled by default**
+(`imu_enabled: true`, `imu_bias_estimation_enabled: false` in both C++ and the
+shipped profile). It starts LIO and prior-map localization, not legacy
+wheel/filtered-odometry nodes:
 
 ```bash
 ros2 launch slam_3d_localization slam_3d_lio_localization.launch.py \
@@ -80,21 +82,44 @@ ros2 launch slam_3d_localization slam_3d_lio_localization.launch.py \
   use_sim_time:=true
 ```
 
-The installed default map is the Stage 30 classified Gangnam PCD. The profile
-consumes `/hesai/center/lidar_points` and `/imu/data`, follows the Stage 29/30
-identity CV7 rotation plus 1.20984 m vertical lever arm, and publishes
-`/localization_3d/lio/odom` plus `odom -> base_link` at IMU cadence. A separate
-no-TF `/localization_3d/lio/scan_odom` carries the final LIO posterior at each
-scan timestamp. The localizer waits for that exact pose before consuming the
-deskewed cloud, keeps constant-velocity prediction off, and owns
-`map -> odom`. Keep the robot stationary for at least the configured 0.5 s IMU
-initialization window.
+The installed default map is the Stage 30 classified Gangnam PCD. The frontend
+consumes `/hesai/center/lidar_points` and `/imu/data`. It trusts raw gyro and
+accelerometer measurements: both bias vectors are fixed at zero, the startup
+window does not estimate/subtract bias, and neither LiDAR nor wheel updates
+can learn bias. Bias process noise and covariance coupling are also disabled.
+The estimator retains its 15-state interface; this does not claim a 9-state
+implementation or the CPU savings of the earlier IMU-off experiment.
+
+IMU frame rotation, the configured 1.20984 m lever arm, stationary/gravity
+initialization (at least 0.5 s), gravity compensation, inertial prediction and
+per-point deskew remain active. LiDAR registration still corrects robot
+pose/velocity; disabling sensor bias learning does not disable localization
+correction or force trust in an incorrect pose. IMU message orientation is not
+used as a replacement for gyro/accelerometer integration.
+
+`/localization_3d/lio/odom` and `odom -> base_link` follow IMU cadence.
+`scan_odom` and `deskewed_points` retain an identical scan-end timestamp for
+the localizer's exact synchronization. The localizer owns `map -> odom`,
+publishing its cached correction at the incoming odometry timestamp.
+Diagnostics expose the active IMU/bias policy and live gyro/accel bias norms.
+
+Set `imu_bias_estimation_enabled: true` explicitly to restore the former
+startup and online bias estimation. `imu_enabled: false` remains available
+only as an opt-in LiDAR-only experiment: no inertial initialization/deskew,
+header-stamped rigid scans, direct accepted scan-to-submap poses, and
+LiDAR-rate odometry/TF. Its legacy `deskewed_points` output is only filtered,
+not deskewed. Rejected registrations publish no new odometry/cloud pair, so
+this is not a map-based recovery path. Its covariance is an uncalibrated
+conservative diagonal (1e3). Both switches are startup choices, not live mode
+changes; configure them under `slam_3d_lio_odometry.ros__parameters` and pass a
+copied file through `params_file:=...` if overriding the defaults.
 
 Wheel velocity remains an opt-in LIO correction through
 `wheel_correction_enabled`; it is `false` in this profile, so no wheel
-subscription is created. Pose-graph anchors are deliberately not loaded or
+subscription is created. Enabling wheel correction requires `imu_enabled: true`;
+an incompatible combination fails at startup. Pose-graph anchors are deliberately not loaded or
 applied yet. They should be added later as another disabled-by-default input,
-without changing this LIO-only default path. That future input must declare a
+without implicitly enabling any aiding input. That future input must declare a
 versioned file format, map frame, timestamp, anchor pose, and validation
 status before a runtime parameter or subscriber is enabled.
 
@@ -105,6 +130,57 @@ while the launch above runs with simulated time:
 ros2 bag play /absolute/path/to/bag --clock \
   --topics /imu/data /hesai/center/lidar_points /tf_static
 ```
+
+Do not replay recorded odometry or dynamic TF over the frontend's outputs.
+
+### Compute-first defaults
+
+The standard Gangnam LIO, generic, and AVS parameter files now prioritize
+lower computation. There is no separate low-compute profile or enable flag.
+The rolling LIO frontend keeps `voxel_surfel`, and fixed-map registration keeps
+the portable CPU `gicp` default. `fast_gicp` and `fast_vgicp_cuda` remain
+optional backend selections as described above. The historical indoor XT32
+replay profile keeps its recorded settings.
+
+| Setting | Previous Gangnam LIO | Current default |
+|---|---:|---:|
+| Frontend scan voxel / range | 0.25 m / 80 m | 0.8 m / 30 m |
+| Rolling submap voxel / radius / keyframes | 0.30 m / 25 m / 40 | 0.8 m / 15 m / 10 |
+| Keyframe motion threshold | 0.5 m / 8 deg | 1.5 m / 15 deg |
+| LIO surfel voxel / minimum points | 0.6 m / 5 | 2.0 m / 3 |
+| LIO iterations / backtracking steps | 12 / 5 | 4 / 2 |
+| LIO surfel center distance / minimum correspondences | 1.2 m / 150 | 2.5 m / 40 |
+| Fixed-map voxel / local radius | 0.35 m / 35 m | 0.8 m / 15 m |
+| Fixed-map target rebuild distance | 0 m | 5 m |
+| GICP registration iterations | 40 | 8 |
+| Fixed-map update motion threshold | 0 m / 0 deg | 0.5 m / 5 deg |
+| Local-map cloud publication | enabled | disabled |
+
+The wheel-disabled policy, exact `scan_odom` synchronization and TF ownership
+are retained. IMU calibration and per-point timestamps apply only when the
+IMU-enabled path is explicitly selected, as described above. After the
+first accepted localization, cached `map -> odom` still publishes at odometry
+cadence even when map matching is skipped by the motion gate. Scan point
+reduction happens in the LIO frontend because the map localizer bypasses scan
+filtering for `input_scan_preprocessed: true`.
+
+Build and source the updated package, then use the same LIO launch as before:
+
+```bash
+ros2 launch slam_3d_localization slam_3d_lio_localization.launch.py \
+  map_path:="$HOME/analysis_outputs/slam_3d/30_floor_person_filtered_nav_grid/full_pcd_maps_only/gangnam_floor_person_filtered_nav_classified_rgb.pcd" \
+  use_sim_time:=true
+```
+
+Use the sensor-only replay command above and set `/initialpose` as usual;
+stop launch and replay with Ctrl+C. Runtime and point counts are the
+experiment's review criteria; localization accuracy is deliberately not a
+pass criterion. Existing registration fitness, correction, observability and
+residual-quality gates are retained, so coarse registration can still be
+rejected. IMU innovation gates are used only in IMU-enabled mode. The bounded
+old-versus-coarse-default replay is recorded in
+`~/analysis_outputs/slam_3d_localization/47_low_compute_ab/REPORT.md` (IMU was
+enabled in both of those runs). It is not an accuracy or deployment validation.
 
 The generic file above intentionally keeps constant-velocity prediction off.
 For the replay-verified indoor XT32 lineage with no declared wheel odometry,

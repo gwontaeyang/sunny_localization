@@ -28,22 +28,22 @@ slam_3d_localizer:
     publish_tf: true
     # Optional visualization bootstrap; keep false unless map and odom origins coincide.
     publish_identity_map_to_odom_before_localization: false
-    publish_local_map: true
+    publish_local_map: false
     # Publish the original PCD fields (including RGB) once with transient-local QoS.
     publish_global_map: true
     input_scan_preprocessed: false
     map_already_voxelized: false
     crop_box_enabled: false
     tf_timeout_s: 0.05
-    scan_voxel_leaf_m: 0.25
-    map_voxel_leaf_m: 0.35
-    local_map_radius_m: 35.0
-    # Zero preserves the legacy per-scan crop. A positive distance reuses the
-    # same local-map target (and its CPU/GPU covariances) until the prediction
-    # moves this far from the target center.
-    local_map_rebuild_distance_m: 0.0
+    # Compute-first defaults; runtime quality gates still apply.
+    scan_voxel_leaf_m: 0.8
+    map_voxel_leaf_m: 0.8
+    local_map_radius_m: 15.0
+    # Reuse the local-map target and CPU/GPU covariances until the prediction
+    # moves 5 m from its center. Set zero to request the legacy per-scan crop.
+    local_map_rebuild_distance_m: 5.0
     min_range_m: 0.5
-    max_range_m: 80.0
+    max_range_m: 30.0
     z_min_m: -5.0
     z_max_m: 8.0
     crop_min_x: -0.7
@@ -52,7 +52,7 @@ slam_3d_localizer:
     crop_max_y: 0.55
     crop_min_z: -0.8
     crop_max_z: 0.9
-    max_iterations: 40
+    max_iterations: 8
     max_correspondence_m: 2.0
     transformation_epsilon: 0.001
     fitness_epsilon: 0.001
@@ -73,8 +73,8 @@ slam_3d_localizer:
     max_registration_inlier_rmse_m: 1.5
     max_correction_translation_m: 2.0
     max_correction_rotation_deg: 30.0
-    update_min_translation_m: 0.10
-    update_min_rotation_deg: 2.0
+    update_min_translation_m: 0.5
+    update_min_rotation_deg: 5.0
     # Backward-compatible pose hold. Enable for wheel-less replay/profile only.
     use_constant_velocity_prediction: false
     constant_velocity_translation_limit_m: 0.30
@@ -88,18 +88,18 @@ slam_3d_localizer:
     odom_max_nearest_age_s: 0.05
     odom_timestamp_reset_threshold_s: 1.0
     min_scan_points: 100
-    min_local_map_points: 500
-    surfel_voxel_size_m: 0.6
-    surfel_min_points_per_voxel: 8
+    min_local_map_points: 200
+    surfel_voxel_size_m: 2.0
+    surfel_min_points_per_voxel: 3
     surfel_max_planarity_ratio: 0.15
     surfel_min_tangent_variance: 0.0001
     surfel_max_plane_distance_m: 0.35
-    surfel_max_center_distance_m: 1.2
+    surfel_max_center_distance_m: 2.5
     surfel_min_correspondences: 40
     surfel_min_correspondence_ratio: 0.20
     surfel_huber_delta_m: 0.10
-    surfel_max_iterations: 20
-    surfel_max_backtracking_steps: 8
+    surfel_max_iterations: 4
+    surfel_max_backtracking_steps: 2
     surfel_backtracking_factor: 0.5
     surfel_rotation_convergence_rad: 0.0001
     surfel_translation_convergence_m: 0.0001

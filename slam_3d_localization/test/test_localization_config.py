@@ -207,7 +207,7 @@ def test_indoor_xt32_no_wheel_replay_profile_matches_verified_contract():
     }
 
 
-def test_gangnam_lio_profile_uses_raw_imu_without_wheel_or_cv_fallback():
+def test_gangnam_profile_defaults_to_raw_imu_without_bias_learning_or_wheel():
     data = yaml.safe_load(
         (PACKAGE_ROOT / "config" / "slam_3d_lio_gangnam.yaml").read_text()
     )
@@ -215,6 +215,8 @@ def test_gangnam_lio_profile_uses_raw_imu_without_wheel_or_cv_fallback():
     localizer = data["slam_3d_localizer"]["ros__parameters"]
 
     assert lio["cloud_topic"] == "/hesai/center/lidar_points"
+    assert lio["imu_enabled"] is True
+    assert lio["imu_bias_estimation_enabled"] is False
     assert lio["imu_topic"] == "/imu/data"
     assert lio["scan_odom_topic"] == "/localization_3d/lio/scan_odom"
     assert lio["imu_frame"] == "cv7_link"

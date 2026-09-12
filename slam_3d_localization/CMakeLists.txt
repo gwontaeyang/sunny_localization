@@ -230,6 +230,10 @@ if(BUILD_TESTING)
   target_link_libraries(test_lio_state_estimator lio_state_estimator)
   ament_add_gtest(test_lio_point_time test/test_lio_point_time.cpp)
   target_link_libraries(test_lio_point_time slam_3d_lio_odometry)
+  ament_add_gtest(test_lidar_only_odometry test/test_lidar_only_odometry.cpp TIMEOUT 60)
+  target_link_libraries(test_lidar_only_odometry slam_3d_lio_odometry)
+  set_tests_properties(test_lidar_only_odometry PROPERTIES
+    ENVIRONMENT "ROS_LOCALHOST_ONLY=1;ROS_DOMAIN_ID=223")
   ament_add_pytest_test(test_localization_config test/test_localization_config.py)
   ament_add_pytest_test(
     test_imu_open_loop_estimator

@@ -158,18 +158,19 @@ private:
   int odom_sync_pending_cloud_limit_{4};
   bool publish_tf_{true};
   bool publish_identity_map_to_odom_before_localization_{false};
-  bool publish_local_map_{true};
+  bool publish_local_map_{false};
   bool publish_global_map_{true};
   bool input_scan_preprocessed_{false};
   bool map_already_voxelized_{false};
   bool crop_box_enabled_{false};
   double tf_timeout_s_{0.05};
-  double scan_voxel_leaf_m_{0.25};
-  double map_voxel_leaf_m_{0.35};
-  double local_map_radius_m_{35.0};
-  double local_map_rebuild_distance_m_{0.0};
+  // Compute-first defaults, shared by bare-node and normal config launches.
+  double scan_voxel_leaf_m_{0.8};
+  double map_voxel_leaf_m_{0.8};
+  double local_map_radius_m_{15.0};
+  double local_map_rebuild_distance_m_{5.0};
   double min_range_m_{0.5};
-  double max_range_m_{80.0};
+  double max_range_m_{30.0};
   double z_min_m_{-5.0};
   double z_max_m_{8.0};
   double crop_min_x_{-0.7};
@@ -178,7 +179,7 @@ private:
   double crop_max_y_{0.55};
   double crop_min_z_{-0.8};
   double crop_max_z_{0.9};
-  int max_iterations_{40};
+  int max_iterations_{8};
   double max_correspondence_m_{2.0};
   double transformation_epsilon_{1.0e-3};
   double fitness_epsilon_{1.0e-3};
@@ -197,8 +198,8 @@ private:
   double max_registration_inlier_rmse_m_{1.5};
   double max_correction_translation_m_{2.0};
   double max_correction_rotation_deg_{30.0};
-  double update_min_translation_m_{0.10};
-  double update_min_rotation_deg_{2.0};
+  double update_min_translation_m_{0.5};
+  double update_min_rotation_deg_{5.0};
   bool use_constant_velocity_prediction_{false};
   double constant_velocity_translation_limit_m_{0.30};
   double constant_velocity_rotation_limit_deg_{10.0};
@@ -210,7 +211,7 @@ private:
   double odom_max_nearest_age_s_{0.05};
   double odom_timestamp_reset_threshold_s_{1.0};
   int min_scan_points_{100};
-  int min_local_map_points_{500};
+  int min_local_map_points_{200};
   ::gole::slam_3d_core::VoxelSurfelRegistration::Config surfel_config_{};
 
   CloudT::Ptr global_map_{new CloudT};
