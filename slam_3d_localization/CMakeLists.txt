@@ -195,6 +195,7 @@ install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config launch rviz DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY patches DESTINATION share/${PROJECT_NAME})
 install(PROGRAMS
+  scripts/evaluate_localization_replay.py
   scripts/estimate_imu_open_loop.py
   scripts/publish_localization_inputs.py
   scripts/resolve_latest_slam_stage.py
@@ -235,6 +236,10 @@ if(BUILD_TESTING)
   set_tests_properties(test_lidar_only_odometry PROPERTIES
     ENVIRONMENT "ROS_LOCALHOST_ONLY=1;ROS_DOMAIN_ID=223")
   ament_add_pytest_test(test_localization_config test/test_localization_config.py)
+  ament_add_pytest_test(
+    test_evaluate_localization_replay
+    test/test_evaluate_localization_replay.py
+  )
   ament_add_pytest_test(
     test_imu_open_loop_estimator
     test/test_imu_open_loop_estimator.py
