@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "stage_sequence": 24,
+  "stage_name": "24_example",
+  "datasets": {
+    "bag02": {
+      "map_source": "/absolute/path/to/bag02_full_map.pcd",
+      "trajectory_source": "/absolute/path/to/bag02_trajectory_post_optimization.csv",
+      "bag": {
+        "path": "/absolute/path/to/source_bag02"
+      },
+      "point_cloud": {
+        "topic": "/points",
+        "frame": "lidar_link"
+      },
+      "imu": {
+        "topic": "/imu/data",
+        "frame": "imu_link"
+      },
+      "wheel_odometry": {
+        "topic": null
+      }
+    },
+    "bag03": {
+      "map_source": "/absolute/path/to/bag03_full_map.pcd",
+      "trajectory_source": "/absolute/path/to/bag03_trajectory_post_optimization.csv",
+      "bag": {
+        "path": "/absolute/path/to/source_bag03.db3"
+      },
+      "point_cloud": {
+        "topic": "/points",
+        "frame": "lidar_link"
+      },
+      "imu": {
+        "topic": "/imu/data",
+        "frame": "imu_link"
+      },
+      "wheel_odometry": {
+        "topic": null
+      }
+    }
+  }
+}

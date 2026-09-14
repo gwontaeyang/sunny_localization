@@ -1,0 +1,109 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index dcc5bdc..65847e5 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -112,3 +112,36 @@ endif()
+ if(BUILD_VGICP_CUDA)
+   set(CUDA_NVCC_FLAGS "--expt-relaxed-constexpr")
++
++  # fast_gicp still uses CMake's legacy FindCUDA module, which does not honor
++  # CMAKE_CUDA_ARCHITECTURES. Translate the modern setting explicitly so the
++  # generated binaries do not inherit a host-dependent default architecture.
++  if(CMAKE_CUDA_ARCHITECTURES)
++    foreach(cuda_architecture IN LISTS CMAKE_CUDA_ARCHITECTURES)
++      if(cuda_architecture MATCHES "^([0-9]+)-virtual$")
++        set(cuda_architecture_number "${CMAKE_MATCH_1}")
++        set(cuda_architecture_code "compute_${cuda_architecture_number}")
++      elseif(cuda_architecture MATCHES "^([0-9]+)-real$")
++        set(cuda_architecture_number "${CMAKE_MATCH_1}")
++        set(cuda_architecture_code "sm_${cuda_architecture_number}")
++      elseif(cuda_architecture MATCHES "^([0-9]+)$")
++        set(cuda_architecture_number "${CMAKE_MATCH_1}")
++        list(APPEND CUDA_NVCC_FLAGS
++          "-gencode=arch=compute_${cuda_architecture_number},code=sm_${cuda_architecture_number}"
++          "-gencode=arch=compute_${cuda_architecture_number},code=compute_${cuda_architecture_number}")
++        continue()
++      else()
++        message(FATAL_ERROR
++          "Unsupported CMAKE_CUDA_ARCHITECTURES entry for legacy FindCUDA: "
++          "${cuda_architecture}. Use a numeric value such as 87 or 90-virtual.")
++      endif()
++
++      list(APPEND CUDA_NVCC_FLAGS
++        "-gencode=arch=compute_${cuda_architecture_number},code=${cuda_architecture_code}")
++    endforeach()
++    message(STATUS "fast_gicp CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
++  else()
++    message(WARNING
++      "CMAKE_CUDA_ARCHITECTURES is unset; legacy FindCUDA will choose its "
++      "toolchain-dependent defaults")
++  endif()
+   add_definitions(-DUSE_VGICP_CUDA)
+diff --git a/include/fast_gicp/gicp/impl/fast_vgicp_cuda_impl.hpp b/include/fast_gicp/gicp/impl/fast_vgicp_cuda_impl.hpp
+index 2693a88..3607510 100644
+--- a/include/fast_gicp/gicp/impl/fast_vgicp_cuda_impl.hpp
++++ b/include/fast_gicp/gicp/impl/fast_vgicp_cuda_impl.hpp
+@@ -39,4 +39,5 @@ void FastVGICPCuda<PointSource, PointTarget>::setCorrespondenceRandomness(int k)
+ template<typename PointSource, typename PointTarget>
+ void FastVGICPCuda<PointSource, PointTarget>::setResolution(double resolution) {
++  voxel_resolution_ = resolution;
+   vgicp_cuda_->set_resolution(resolution);
+ }
+diff --git a/include/fast_gicp/cuda/fast_vgicp_cuda.cuh b/include/fast_gicp/cuda/fast_vgicp_cuda.cuh
+index be1dcb5..1925071 100644
+--- a/include/fast_gicp/cuda/fast_vgicp_cuda.cuh
++++ b/include/fast_gicp/cuda/fast_vgicp_cuda.cuh
+@@ -5,21 +5,12 @@
+ #include <vector>
+ #include <Eigen/Core>
+ #include <Eigen/Geometry>
++#include <thrust/device_allocator.h>
++#include <thrust/device_vector.h>
++#include <thrust/pair.h>
+ 
+ #include <fast_gicp/gicp/gicp_settings.hpp>
+ 
+-namespace thrust {
+-
+-template <typename T1, typename T2>
+-class pair;
+-
+-template <typename T>
+-class device_allocator;
+-
+-template <typename T, typename Alloc>
+-class device_vector;
+-}  // namespace thrust
+-
+ namespace fast_gicp {
+ namespace cuda {
+ 
+diff --git a/include/fast_gicp/cuda/ndt_cuda.cuh b/include/fast_gicp/cuda/ndt_cuda.cuh
+index 5a70f75..e060c91 100644
+--- a/include/fast_gicp/cuda/ndt_cuda.cuh
++++ b/include/fast_gicp/cuda/ndt_cuda.cuh
+@@ -5,21 +5,13 @@
+ #include <vector>
+ #include <Eigen/Core>
+ #include <Eigen/Geometry>
++#include <thrust/device_allocator.h>
++#include <thrust/device_vector.h>
++#include <thrust/pair.h>
+ 
+ #include <fast_gicp/ndt/ndt_settings.hpp>
+ #include <fast_gicp/gicp/gicp_settings.hpp>
+ 
+-namespace thrust {
+-template <typename T1, typename T2>
+-class pair;
+-
+-template <typename T>
+-class device_allocator;
+-
+-template <typename T, typename Alloc>
+-class device_vector;
+-}  // namespace thrust
+-
+ namespace fast_gicp {
+ namespace cuda {
+ 
