@@ -9,7 +9,6 @@
 #include <pcl/filters/filter.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/io/pcd_io.h>
-#include <pcl/kdtree/kdtree_flann.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <tf2/exceptions.h>
 
@@ -288,7 +287,7 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
     !valid_registration_method || !valid_fast_gicp_parameters ||
     !valid_cuda_parameters ||
     (input_scan_preprocessed_ && crop_box_enabled_) || !valid_crop_bounds ||
-    !::gole::slam_3d_core::VoxelSurfelRegistration::isValidConfig(surfel_config_) ||
+    !VoxelSurfelRegistration::isValidConfig(surfel_config_) ||
     scan_voxel_leaf_m_ <= 0.0 || map_voxel_leaf_m_ <= 0.0 ||
     local_map_radius_m_ <= 0.0 ||
     !std::isfinite(local_map_rebuild_distance_m_) ||
@@ -338,34 +337,36 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
     constant_velocity_translation_limit_m_, constant_velocity_rotation_limit_deg_,
     constant_velocity_max_gap_s_);
   cloud_freshness_guard_ = CloudFreshnessGuard(max_cloud_age_s_);
-  if (registration_method_ != "voxel_surfel") {
-    RegistrationBackendConfig backend_config;
-    backend_config.method = registration_method_;
-    backend_config.max_iterations = max_iterations_;
-    backend_config.max_correspondence_m = max_correspondence_m_;
-    backend_config.transformation_epsilon = transformation_epsilon_;
-    backend_config.fitness_epsilon = fitness_epsilon_;
-    backend_config.fast_gicp_num_threads = fast_gicp_num_threads_;
-    backend_config.fast_gicp_correspondence_randomness =
-      fast_gicp_correspondence_randomness_;
-    backend_config.fast_gicp_regularization_method =
-      fast_gicp_regularization_method_;
-    backend_config.fast_gicp_rotation_epsilon_rad =
-      fast_gicp_rotation_epsilon_rad_;
-    backend_config.fast_vgicp_cuda_voxel_resolution_m =
-      fast_vgicp_cuda_voxel_resolution_m_;
-    backend_config.fast_vgicp_cuda_neighbor_search_method =
-      fast_vgicp_cuda_neighbor_search_method_;
-    backend_config.fast_vgicp_cuda_neighbor_search_radius =
-      fast_vgicp_cuda_neighbor_search_radius_;
-    backend_config.fast_vgicp_cuda_nearest_neighbor_method =
-      fast_vgicp_cuda_nearest_neighbor_method_;
-    backend_config.fast_vgicp_cuda_kernel_width =
-      fast_vgicp_cuda_kernel_width_;
-    backend_config.fast_vgicp_cuda_kernel_max_distance =
-      fast_vgicp_cuda_kernel_max_distance_;
-    registration_backend_ = createRegistrationBackend(backend_config);
-  }
+  RegistrationBackendConfig backend_config;
+  backend_config.method = registration_method_;
+  backend_config.max_iterations = max_iterations_;
+  backend_config.max_correspondence_m = max_correspondence_m_;
+  backend_config.transformation_epsilon = transformation_epsilon_;
+  backend_config.fitness_epsilon = fitness_epsilon_;
+  backend_config.fast_gicp_num_threads = fast_gicp_num_threads_;
+  backend_config.fast_gicp_correspondence_randomness =
+    fast_gicp_correspondence_randomness_;
+  backend_config.fast_gicp_regularization_method =
+    fast_gicp_regularization_method_;
+  backend_config.fast_gicp_rotation_epsilon_rad =
+    fast_gicp_rotation_epsilon_rad_;
+  backend_config.fast_vgicp_cuda_voxel_resolution_m =
+    fast_vgicp_cuda_voxel_resolution_m_;
+  backend_config.fast_vgicp_cuda_neighbor_search_method =
+    fast_vgicp_cuda_neighbor_search_method_;
+  backend_config.fast_vgicp_cuda_neighbor_search_radius =
+    fast_vgicp_cuda_neighbor_search_radius_;
+  backend_config.fast_vgicp_cuda_nearest_neighbor_method =
+    fast_vgicp_cuda_nearest_neighbor_method_;
+  backend_config.fast_vgicp_cuda_kernel_width =
+    fast_vgicp_cuda_kernel_width_;
+  backend_config.fast_vgicp_cuda_kernel_max_distance =
+    fast_vgicp_cuda_kernel_max_distance_;
+  backend_config.surfel = surfel_config_;
+  registration_backend_ = createRegistrationBackend(backend_config);
+  registration_quality_limits_ = {
+    fitness_threshold_, max_correction_translation_m_, max_correction_rotation_deg_,
+    min_registration_inlier_ratio_, max_registration_inlier_rmse_m_};
   loadMap();
 
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
@@ -410,8 +411,9 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
     cloud_topic_, cloud_qos,
     std::bind(&Slam3dLocalizer::cloudCallback, this, std::placeholders::_1));
   pending_cloud_timer_ = create_wall_timer(
-    std::chrono::milliseconds(2),
+    std::chrono::milliseconds(20),
     std::bind(&Slam3dLocalizer::processPendingClouds, this));
+  pending_cloud_timer_->cancel();
   no_motion_update_service_ = create_service<std_srvs::srv::Empty>(
     "~/request_nomotion_update",
     std::bind(
@@ -516,6 +518,7 @@ void Slam3dLocalizer::initialPoseCallback(
   have_last_cloud_stamp_ = false;
   constant_velocity_predictor_.reset();
   pending_clouds_.clear();
+  updatePendingCloudTimer();
   have_cached_local_map_ = false;
   cached_local_map_.reset();
   initial_pose_update_pending_ = true;
@@ -745,91 +748,26 @@ Slam3dLocalizer::RegistrationOutcome Slam3dLocalizer::registerScanToMap(
   const Eigen::Isometry3d & prediction)
 {
   ++registration_attempt_count_;
-  RegistrationOutcome outcome;
-  outcome.map_T_base = prediction;
-  const auto registration_start = std::chrono::steady_clock::now();
-  const auto evaluate_overlap = [&scan, &local_map](
-    RegistrationOutcome & result, double max_correspondence_m)
-    {
-      const Eigen::Matrix3d linear = result.map_T_base.linear();
-      result.transform_determinant = linear.determinant();
-      result.transform_orthogonality_error =
-        (linear.transpose() * linear - Eigen::Matrix3d::Identity()).norm();
-      result.inlier_count = 0;
-      result.inlier_ratio = 0.0;
-      result.inlier_rmse_m = std::numeric_limits<double>::infinity();
-      if (!result.map_T_base.matrix().allFinite() || max_correspondence_m <= 0.0) {
-        return;
-      }
-
-      CloudT aligned;
-      pcl::transformPointCloud(
-        *scan, aligned, result.map_T_base.matrix().cast<float>());
-      pcl::KdTreeFLANN<PointT> tree;
-      tree.setInputCloud(local_map);
-      const double max_distance_sq = max_correspondence_m * max_correspondence_m;
-      int valid_points = 0;
-      double squared_error_sum = 0.0;
-      std::vector<int> indices(1);
-      std::vector<float> squared_distances(1);
-      for (const auto & point : aligned.points) {
-        if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
-          !std::isfinite(point.z))
-        {
-          continue;
-        }
-        ++valid_points;
-        if (tree.nearestKSearch(point, 1, indices, squared_distances) <= 0 ||
-          squared_distances.front() > max_distance_sq)
-        {
-          continue;
-        }
-        ++result.inlier_count;
-        squared_error_sum += squared_distances.front();
-      }
-      if (valid_points > 0) {
-        result.inlier_ratio =
-          static_cast<double>(result.inlier_count) / static_cast<double>(valid_points);
-      }
-      if (result.inlier_count > 0) {
-        result.inlier_rmse_m = std::sqrt(
-          squared_error_sum / static_cast<double>(result.inlier_count));
-      }
-    };
-
-  if (registration_method_ == "voxel_surfel") {
-    const ::gole::slam_3d_core::VoxelSurfelRegistration registration(surfel_config_);
-    const auto result = registration.align(*scan, *local_map, prediction);
-    outcome.map_T_base = result.target_T_source;
-    outcome.backend_accepted = result.accepted;
-    outcome.backend_converged = result.converged;
-    outcome.backend_reason = result.reason;
-    outcome.fitness = std::isfinite(result.rmse) ?
-      result.rmse * result.rmse : std::numeric_limits<double>::infinity();
-    outcome.target_voxels = result.target_voxels;
-    outcome.planar_surfels = result.planar_surfels;
-    outcome.correspondences = result.correspondences;
-    outcome.correspondence_ratio = result.correspondence_ratio;
-    outcome.surfel_rmse_m = result.rmse;
-    outcome.surfel_p95_m = result.p95_abs_residual;
-    outcome.observable_rank = result.observable_rank;
-    outcome.iterations = result.iterations;
-    outcome.backend_runtime_ms = result.total_time_ms;
-    outcome.backend_name = "voxel_surfel";
-    evaluate_overlap(outcome, std::max(1.0e-3, surfel_config_.max_center_distance));
-    return outcome;
-  }
-
-  if (!registration_backend_) {
-    throw std::logic_error("registration backend was not initialized");
-  }
   const RegistrationBackendResult result = registration_backend_->align(
     scan, local_map, local_map_revision, prediction);
+  const bool use_surfel_gates = registration_method_ == "voxel_surfel";
+  const auto overlap = evaluateRegistrationOverlap(
+    scan, local_map, result.target_T_source,
+    use_surfel_gates ? std::max(1.0e-3, surfel_config_.max_center_distance) :
+    max_correspondence_m_);
+  RegistrationOutcome outcome;
   outcome.map_T_base = result.target_T_source;
-  outcome.backend_accepted = result.converged;
+  outcome.backend_accepted = result.accepted;
   outcome.backend_converged = result.converged;
   outcome.backend_reason = result.reason;
   outcome.fitness = result.fitness;
+  outcome.target_voxels = result.surfel.target_voxels;
+  outcome.planar_surfels = result.surfel.planar_surfels;
+  outcome.correspondences = result.surfel.correspondences;
+  outcome.correspondence_ratio = result.surfel.correspondence_ratio;
+  outcome.surfel_rmse_m = result.surfel.rmse;
+  outcome.surfel_p95_m = result.surfel.p95_abs_residual;
+  outcome.observable_rank = result.surfel.observable_rank;
   outcome.iterations = result.iterations;
   outcome.backend_runtime_ms = result.total_runtime_ms;
   outcome.backend_name = registration_backend_->name();
@@ -842,11 +780,13 @@ Slam3dLocalizer::RegistrationOutcome Slam3dLocalizer::registerScanToMap(
     registration_backend_->initializationRuntimeMs();
   outcome.target_update_runtime_ms = result.target_update_runtime_ms;
   outcome.align_runtime_ms = result.align_runtime_ms;
-  // Use one backend-independent Euclidean overlap definition for quality
-  // comparison. This is diagnostic-only for the GICP-family backends; their
-  // existing convergence and acceptance gates remain unchanged.
-  evaluate_overlap(outcome, max_correspondence_m_);
-  (void)registration_start;
+  outcome.inlier_count = overlap.inlier_count;
+  outcome.inlier_ratio = overlap.inlier_ratio;
+  outcome.inlier_rmse_m = overlap.inlier_rmse_m;
+  outcome.transform_determinant = overlap.transform_determinant;
+  outcome.transform_orthogonality_error = overlap.transform_orthogonality_error;
+  outcome.quality = evaluateMapRegistration(
+    result, overlap, use_surfel_gates, prediction, registration_quality_limits_);
   return outcome;
 }
 
@@ -869,6 +809,7 @@ void Slam3dLocalizer::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedP
     ++unsynchronized_cloud_drop_count_;
   }
   if (!hasExactOdom(rclcpp::Time(pending_clouds_.front()->header.stamp).nanoseconds())) {
+    updatePendingCloudTimer();
     ++exact_odom_wait_count_;
     publishDiagnostic(
       rclcpp::Time(message->header.stamp), diagnostic_msgs::msg::DiagnosticStatus::WARN,
@@ -882,14 +823,29 @@ void Slam3dLocalizer::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedP
 void Slam3dLocalizer::processPendingClouds()
 {
   if (!require_exact_odom_for_update_ || pending_clouds_.empty()) {
+    updatePendingCloudTimer();
     return;
   }
   const auto message = pending_clouds_.front();
   if (!hasExactOdom(rclcpp::Time(message->header.stamp).nanoseconds())) {
+    updatePendingCloudTimer();
     return;
   }
   pending_clouds_.pop_front();
+  updatePendingCloudTimer();
   processCloud(message);
+}
+
+void Slam3dLocalizer::updatePendingCloudTimer()
+{
+  // Do not poll at all while idle. Keep the current retry deadline when more
+  // clouds arrive, so a busy input cannot indefinitely defer queued work.
+  const bool needs_retry = require_exact_odom_for_update_ && !pending_clouds_.empty();
+  if (needs_retry && pending_cloud_timer_->is_canceled()) {
+    pending_cloud_timer_->reset();
+  } else if (!needs_retry && !pending_cloud_timer_->is_canceled()) {
+    pending_cloud_timer_->cancel();
+  }
 }
 
 void Slam3dLocalizer::processCloud(const sensor_msgs::msg::PointCloud2::SharedPtr message)
@@ -918,6 +874,7 @@ void Slam3dLocalizer::processCloud(const sensor_msgs::msg::PointCloud2::SharedPt
       }
       constant_velocity_predictor_.reset();
       pending_clouds_.clear();
+      updatePendingCloudTimer();
       ++cloud_timestamp_reset_count_;
       RCLCPP_WARN(
         get_logger(),
@@ -1124,45 +1081,8 @@ void Slam3dLocalizer::processCloud(const sensor_msgs::msg::PointCloud2::SharedPt
 
   const double fitness = registration.fitness;
   const Eigen::Isometry3d & result = registration.map_T_base;
-  const Eigen::Isometry3d correction = prediction.inverse() * result;
-  const double correction_translation = correction.translation().norm();
-  const double correction_rotation_deg =
-    rotationAngle(correction.linear()) * 180.0 / M_PI;
-  const bool use_mapper_overlap_gates = registration_method_ == "voxel_surfel";
-  bool accepted = false;
-  std::string gate_reason = "accepted";
-  if (!registration.backend_accepted) {
-    gate_reason = registration_method_ == "voxel_surfel" ?
-      "surfel_" + registration.backend_reason : registration.backend_reason;
-  } else if (!result.matrix().allFinite() ||
-    (use_mapper_overlap_gates &&
-    (std::abs(registration.transform_determinant - 1.0) > 0.05 ||
-    registration.transform_orthogonality_error > 0.05)))
-  {
-    gate_reason = "invalid_transform";
-  } else if (!std::isfinite(fitness) || fitness > fitness_threshold_) {
-    gate_reason = "fitness";
-  } else if (use_mapper_overlap_gates &&
-    (registration.inlier_count <= 0 ||
-    registration.inlier_ratio < min_registration_inlier_ratio_))
-  {
-    gate_reason = "inlier_ratio";
-  } else if (use_mapper_overlap_gates &&
-    (!std::isfinite(registration.inlier_rmse_m) ||
-    registration.inlier_rmse_m > max_registration_inlier_rmse_m_))
-  {
-    gate_reason = "inlier_rmse";
-  } else if (!std::isfinite(correction_translation) ||
-    !std::isfinite(correction_rotation_deg))
-  {
-    gate_reason = "invalid_correction";
-  } else if (correction_translation > max_correction_translation_m_) {
-    gate_reason = "translation_correction";
-  } else if (correction_rotation_deg > max_correction_rotation_deg_) {
-    gate_reason = "rotation_correction";
-  } else {
-    accepted = true;
-  }
+  const bool accepted = registration.quality.accepted;
+  const std::string & gate_reason = registration.quality.reason;
   const auto elapsed = std::chrono::duration<double, std::milli>(
     std::chrono::steady_clock::now() - start).count();
 

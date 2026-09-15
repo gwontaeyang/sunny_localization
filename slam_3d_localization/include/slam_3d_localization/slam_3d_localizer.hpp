@@ -7,7 +7,6 @@
 #include "slam_3d_localization/map_odom_transform_cache.hpp"
 #include "slam_3d_localization/odom_pose_buffer.hpp"
 #include "slam_3d_localization/registration_backend.hpp"
-#include "slam_3d_core/voxel_surfel_registration.hpp"
 
 #include <Eigen/Geometry>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
@@ -38,6 +37,8 @@ public:
   explicit Slam3dLocalizer(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
 private:
+  friend class Slam3dLocalizerTestPeer;
+
   using PointT = pcl::PointXYZ;
   using CloudT = pcl::PointCloud<PointT>;
 
@@ -85,6 +86,7 @@ private:
     double inlier_rmse_m{0.0};
     double transform_determinant{1.0};
     double transform_orthogonality_error{0.0};
+    RegistrationAcceptance quality;
   };
 
   struct LocalMapSnapshot
@@ -108,6 +110,7 @@ private:
     std::shared_ptr<std_srvs::srv::Empty::Response> response);
   void cloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr message);
   void processPendingClouds();
+  void updatePendingCloudTimer();
   void processCloud(const sensor_msgs::msg::PointCloud2::SharedPtr message);
   bool hasExactOdom(std::int64_t stamp_ns) const;
   PreparedScan prepareScan(const sensor_msgs::msg::PointCloud2 & message);
@@ -212,11 +215,12 @@ private:
   double odom_timestamp_reset_threshold_s_{1.0};
   int min_scan_points_{100};
   int min_local_map_points_{200};
-  ::gole::slam_3d_core::VoxelSurfelRegistration::Config surfel_config_{};
+  VoxelSurfelRegistration::Config surfel_config_{};
 
   CloudT::Ptr global_map_{new CloudT};
   pcl::PCLPointCloud2 visualization_map_;
   std::unique_ptr<RegistrationBackend> registration_backend_;
+  RegistrationQualityLimits registration_quality_limits_;
   CloudT::Ptr cached_local_map_;
   Eigen::Vector3d cached_local_map_center_{Eigen::Vector3d::Zero()};
   bool have_cached_local_map_{false};
@@ -262,6 +266,8 @@ private:
     constant_velocity_translation_limit_m_, constant_velocity_rotation_limit_deg_,
     constant_velocity_max_gap_s_};
   CloudFreshnessGuard cloud_freshness_guard_{max_cloud_age_s_};
+  // Cloud, retry timer and initial-pose callbacks share the default mutually
+  // exclusive group. Odometry callbacks never access this queue or its timer.
   std::deque<sensor_msgs::msg::PointCloud2::SharedPtr> pending_clouds_;
 
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;

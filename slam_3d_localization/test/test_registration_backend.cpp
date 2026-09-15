@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <limits>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -80,6 +81,149 @@ double rotationErrorRadians(
   const Eigen::Matrix3d delta = estimate.linear().transpose() * expected.linear();
   const double cosine = std::clamp((delta.trace() - 1.0) * 0.5, -1.0, 1.0);
   return std::acos(cosine);
+}
+
+RegistrationBackend::CloudT::Ptr floorCloud()
+{
+  RegistrationBackend::CloudT::Ptr cloud(new RegistrationBackend::CloudT);
+  for (int x = -20; x <= 20; ++x) {
+    for (int y = -20; y <= 20; ++y) {
+      cloud->push_back(pcl::PointXYZ(0.1F * x, 0.1F * y, 0.0F));
+    }
+  }
+  return cloud;
+}
+
+TEST(RegistrationBackend, NativeSurfelPreservesDirectSolverAndReusesPreparedTarget)
+{
+  RegistrationBackendConfig config;
+  config.method = "voxel_surfel";
+  config.surfel.max_iterations = 1;
+  auto backend = createRegistrationBackend(config);
+  const auto target = floorCloud();
+  auto shift = Eigen::Isometry3d::Identity();
+  shift.translation().z() = 0.08;
+  const auto source = transformedCloud(*target, shift);
+  const VoxelSurfelRegistration native(config.surfel);
+  const auto direct = native.align(*source, *target, Eigen::Isometry3d::Identity());
+  const auto first = backend->align(source, target, 1U, Eigen::Isometry3d::Identity());
+  const auto second = backend->align(source, target, 1U, Eigen::Isometry3d::Identity());
+  EXPECT_STREQ(backend->name(), "voxel_surfel");
+  EXPECT_FALSE(backend->isCuda());
+  ASSERT_TRUE(direct.accepted) << direct.reason;
+  EXPECT_FALSE(direct.converged);
+  EXPECT_TRUE(first.accepted);
+  EXPECT_FALSE(first.converged);
+  EXPECT_EQ(first.reason, direct.reason);
+  EXPECT_TRUE(first.target_T_source.matrix().isApprox(direct.target_T_source.matrix(), 0.0));
+  EXPECT_TRUE(second.target_T_source.matrix().isApprox(direct.target_T_source.matrix(), 0.0));
+  EXPECT_DOUBLE_EQ(first.rmse_m, direct.rmse);
+  EXPECT_DOUBLE_EQ(first.fitness, direct.rmse * direct.rmse);
+  EXPECT_TRUE(first.first_call);
+  EXPECT_FALSE(first.target_reused);
+  EXPECT_TRUE(second.target_reused);
+  EXPECT_FALSE(second.first_call);
+  EXPECT_EQ(second.target_upload_count, 1U);
+  EXPECT_EQ(second.target_revision, 1U);
+  EXPECT_DOUBLE_EQ(second.target_update_runtime_ms, 0.0);
+  EXPECT_TRUE(second.surfel.physical_hessian.isApprox(direct.physical_hessian, 0.0));
+}
+
+TEST(RegistrationBackend, NativeSurfelRejectsStaleIdentityAndRebuildsChangedTarget)
+{
+  RegistrationBackendConfig config;
+  config.method = "voxel_surfel";
+  auto backend = createRegistrationBackend(config);
+  const auto source = floorCloud();
+  const auto first_target = floorCloud();
+  auto shift = Eigen::Isometry3d::Identity();
+  shift.translation().z() = 0.12;
+  const auto second_target = transformedCloud(*first_target, shift);
+  backend->align(source, first_target, 7U, Eigen::Isometry3d::Identity());
+  EXPECT_THROW(backend->align(source, second_target, 7U, Eigen::Isometry3d::Identity()), std::logic_error);
+  EXPECT_THROW(backend->align(source, first_target, 8U, Eigen::Isometry3d::Identity()), std::logic_error);
+  const auto rebuilt = backend->align(source, second_target, 8U, Eigen::Isometry3d::Identity());
+  ASSERT_TRUE(rebuilt.accepted) << rebuilt.reason;
+  EXPECT_NEAR(rebuilt.target_T_source.translation().z(), 0.12, 1.0e-6);
+  EXPECT_EQ(rebuilt.target_upload_count, 2U);
+  EXPECT_FALSE(rebuilt.target_reused);
+  EXPECT_TRUE(backend->align(source, second_target, 8U, Eigen::Isometry3d::Identity()).target_reused);
+}
+
+TEST(RegistrationBackend, CommonInputValidationDoesNotPoisonTheNativeCache)
+{
+  RegistrationBackendConfig config;
+  config.method = "voxel_surfel";
+  auto backend = createRegistrationBackend(config);
+  const auto cloud = floorCloud();
+  auto invalid = Eigen::Isometry3d::Identity();
+  invalid.translation().x() = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_THROW(backend->align(nullptr, cloud, 1U, Eigen::Isometry3d::Identity()), std::invalid_argument);
+  EXPECT_THROW(backend->align(cloud, cloud, 1U, invalid), std::invalid_argument);
+  const auto first = backend->align(cloud, cloud, 1U, Eigen::Isometry3d::Identity());
+  EXPECT_TRUE(first.first_call);
+  EXPECT_EQ(first.target_upload_count, 1U);
+}
+
+TEST(RegistrationQuality, EuclideanOverlapKeepsFiniteSourceDenominator)
+{
+  RegistrationBackend::CloudT::Ptr source(new RegistrationBackend::CloudT);
+  RegistrationBackend::CloudT::Ptr target(new RegistrationBackend::CloudT);
+  target->push_back(pcl::PointXYZ(0.0F, 0.0F, 0.0F));
+  source->push_back(pcl::PointXYZ(0.1F, 0.0F, 0.0F));
+  source->push_back(pcl::PointXYZ(3.0F, 0.0F, 0.0F));
+  source->push_back(pcl::PointXYZ(std::numeric_limits<float>::quiet_NaN(), 0.0F, 0.0F));
+  source->is_dense = false;
+  const auto overlap = evaluateRegistrationOverlap(source, target, Eigen::Isometry3d::Identity(), 0.5);
+  EXPECT_EQ(overlap.inlier_count, 1);
+  EXPECT_DOUBLE_EQ(overlap.inlier_ratio, 0.5);
+  EXPECT_NEAR(overlap.inlier_rmse_m, 0.1, 1.0e-7);
+  EXPECT_DOUBLE_EQ(overlap.transform_determinant, 1.0);
+  EXPECT_DOUBLE_EQ(overlap.transform_orthogonality_error, 0.0);
+}
+
+TEST(RegistrationQuality, LioPreservesAcceptedIterateAndRejectionReasons)
+{
+  RegistrationBackendResult result;
+  result.accepted = true;
+  result.converged = false;
+  result.reason = "accepted_max_iterations";
+  RegistrationQualityLimits limits;
+  EXPECT_TRUE(evaluateLioRegistration(result, Eigen::Isometry3d::Identity(), limits).accepted);
+  result.fitness = 2.0;
+  EXPECT_EQ(evaluateLioRegistration(result, Eigen::Isometry3d::Identity(), limits).reason, "fitness");
+  result.fitness = std::numeric_limits<double>::infinity();
+  EXPECT_EQ(evaluateLioRegistration(result, Eigen::Isometry3d::Identity(), limits).reason, "invalid_result");
+  result.fitness = 0.0;
+  result.target_T_source.translation().x() = 3.0;
+  EXPECT_EQ(evaluateLioRegistration(result, Eigen::Isometry3d::Identity(), limits).reason, "translation_correction");
+  result.target_T_source = Eigen::Isometry3d::Identity();
+  result.target_T_source.linear() = Eigen::AngleAxisd(0.8, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+  EXPECT_EQ(evaluateLioRegistration(result, Eigen::Isometry3d::Identity(), limits).reason, "rotation_correction");
+  result.accepted = false;
+  result.reason = "no_planar_surfels";
+  EXPECT_EQ(evaluateLioRegistration(result, Eigen::Isometry3d::Identity(), limits).reason, "no_planar_surfels");
+}
+
+TEST(RegistrationQuality, MapOverlapGatesRemainNativeOnly)
+{
+  RegistrationBackendResult result;
+  result.accepted = true;
+  result.converged = false;
+  RegistrationOverlap overlap;
+  RegistrationQualityLimits limits;
+  EXPECT_TRUE(evaluateMapRegistration(result, overlap, false, Eigen::Isometry3d::Identity(), limits).accepted);
+  EXPECT_EQ(evaluateMapRegistration(result, overlap, true, Eigen::Isometry3d::Identity(), limits).reason, "inlier_ratio");
+  overlap.inlier_count = 50;
+  overlap.inlier_ratio = 0.5;
+  overlap.inlier_rmse_m = 2.0;
+  EXPECT_EQ(evaluateMapRegistration(result, overlap, true, Eigen::Isometry3d::Identity(), limits).reason, "inlier_rmse");
+  overlap.inlier_rmse_m = 0.1;
+  EXPECT_TRUE(evaluateMapRegistration(result, overlap, true, Eigen::Isometry3d::Identity(), limits).accepted);
+  result.accepted = false;
+  result.reason = "quality_rmse";
+  EXPECT_EQ(evaluateMapRegistration(result, overlap, true, Eigen::Isometry3d::Identity(), limits).reason, "surfel_quality_rmse");
+  EXPECT_EQ(evaluateMapRegistration(result, overlap, false, Eigen::Isometry3d::Identity(), limits).reason, "quality_rmse");
 }
 
 TEST(RegistrationBackend, PclGicpPersistsAndReusesAnUnchangedTarget)

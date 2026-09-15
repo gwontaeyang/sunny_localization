@@ -5,9 +5,13 @@
 #include <pcl_conversions/pcl_conversions.h>
 
 #include <cmath>
+#include <chrono>
+#include <cstring>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <thread>
 #include <vector>
 
 namespace gole::slam_3d_localization
@@ -68,12 +72,99 @@ public:
 
   static pcl::PointCloud<pcl::PointXYZ>::Ptr rigidCloud(
     const LioOdometry & node, const sensor_msgs::msg::PointCloud2 & message,
-    const Eigen::Isometry3d & base_T_sensor)
+    const Eigen::Isometry3d & base_T_sensor, std::size_t * sampled_points = nullptr)
   {
     std::size_t valid_points = 0U;
-    return node.prepareAndDeskewCloud(
+    auto result = node.prepareAndDeskewCloud(
       message, base_T_sensor, {}, Eigen::Isometry3d::Identity(),
       100000000000LL, 100000000000LL, false, valid_points);
+    if (sampled_points != nullptr) {
+      *sampled_points = valid_points;
+    }
+    return result;
+  }
+
+  static bool timerCanceled(const LioOdometry & node)
+  {
+    return node.cloud_processing_timer_ && node.cloud_processing_timer_->is_canceled();
+  }
+
+  static std::size_t budgetSkipped(const LioOdometry & node)
+  {
+    return node.compute_budget_skipped_clouds_;
+  }
+
+  static void resetEpoch(LioOdometry & node)
+  {
+    node.resetForTimeEpoch("unit_test_epoch");
+  }
+
+  static bool rawCloudGroupAutoAdded(const LioOdometry & node)
+  {
+    return node.cloud_callback_group_->automatically_add_to_executor_with_node();
+  }
+
+  static std::size_t actualCloudDepth(const LioOdometry & node)
+  {
+    return node.cloud_sub_->get_actual_qos().get_rmw_qos_profile().depth;
+  }
+
+  static bool hasCloudTakeTimer(const LioOdometry & node)
+  {
+    return static_cast<bool>(node.cloud_take_timer_);
+  }
+
+  static void takeCloud(LioOdometry & node)
+  {
+    node.takeLatestCloud();
+  }
+
+  static std::size_t cloudSamplesTaken(const LioOdometry & node)
+  {
+    return node.cloud_samples_taken_;
+  }
+
+  static bool hasImuTakeTimer(const LioOdometry & node)
+  {
+    return static_cast<bool>(node.imu_take_timer_);
+  }
+
+  static bool imuGroupAutoAdded(const LioOdometry & node)
+  {
+    return node.imu_callback_group_ &&
+           node.imu_callback_group_->automatically_add_to_executor_with_node();
+  }
+
+  static std::size_t actualImuDepth(const LioOdometry & node)
+  {
+    return node.imu_sub_->get_actual_qos().get_rmw_qos_profile().depth;
+  }
+
+  static void takeImu(LioOdometry & node)
+  {
+    node.takeImuBatch();
+  }
+
+  static bool seedImuState(LioOdometry & node, const std::int64_t stamp_ns)
+  {
+    ImuMeasurement measurement;
+    measurement.stamp_ns = stamp_ns;
+    measurement.linear_acceleration_mps2.z() = 9.80665;
+    if (!node.corrected_estimator_.initialize(measurement, Eigen::Quaterniond::Identity())) {
+      return false;
+    }
+    node.live_estimator_ = node.corrected_estimator_;
+    node.latest_imu_stamp_ns_ = stamp_ns;
+    return true;
+  }
+
+  static std::vector<std::int64_t> bufferedImuStamps(const LioOdometry & node)
+  {
+    std::vector<std::int64_t> stamps;
+    for (const auto & measurement : node.imu_buffer_) {
+      stamps.push_back(measurement.stamp_ns);
+    }
+    return stamps;
   }
 };
 
@@ -321,6 +412,187 @@ TEST_F(LidarOnlyOdometry, StaticSensorTransformIsStillApplied)
   EXPECT_NEAR(result->front().z, expected.z(), 1.0e-6);
 }
 
+TEST_F(LidarOnlyOdometry, RawPointWorkIsCappedBeforeVoxelFiltering)
+{
+  LioOdometry node(testOptions());
+  Cloud cloud;
+  for (std::size_t index = 0U; index < 8192U; ++index) {
+    cloud.emplace_back(
+      2.0F + 0.05F * static_cast<float>(index % 128U),
+      0.05F * static_cast<float>(index / 128U), 0.0F);
+  }
+  sensor_msgs::msg::PointCloud2 message;
+  pcl::toROSMsg(cloud, message);
+  std::size_t sampled = 0U;
+  const auto result = LioOdometryTestPeer::rigidCloud(
+    node, message, Eigen::Isometry3d::Identity(), &sampled);
+  EXPECT_EQ(sampled, 1024U);
+  EXPECT_EQ(result->size(), 1024U);
+}
+
+TEST_F(LidarOnlyOdometry, SubsamplingRespectsOrganizedRowPadding)
+{
+  LioOdometry node(testOptions());
+  Cloud cloud;
+  for (std::size_t index = 0U; index < 2048U; ++index) {
+    cloud.emplace_back(
+      2.0F + 0.05F * static_cast<float>(index % 64U),
+      0.05F * static_cast<float>(index / 64U), 0.0F);
+  }
+  sensor_msgs::msg::PointCloud2 packed;
+  pcl::toROSMsg(cloud, packed);
+  auto padded = packed;
+  padded.width = 64U;
+  padded.height = 32U;
+  padded.row_step = padded.width * padded.point_step + 13U;
+  padded.data.assign(static_cast<std::size_t>(padded.row_step) * padded.height, 0xFFU);
+  for (std::size_t row = 0U; row < padded.height; ++row) {
+    std::memcpy(
+      padded.data.data() + row * padded.row_step,
+      packed.data.data() + row * padded.width * padded.point_step,
+      static_cast<std::size_t>(padded.width) * padded.point_step);
+  }
+  std::size_t sampled = 0U;
+  const auto actual = LioOdometryTestPeer::rigidCloud(
+    node, padded, Eigen::Isometry3d::Identity(), &sampled);
+  const auto expected = LioOdometryTestPeer::rigidCloud(
+    node, packed, Eigen::Isometry3d::Identity());
+  EXPECT_EQ(sampled, 1024U);
+  ASSERT_EQ(actual->size(), expected->size());
+  ASSERT_EQ(actual->size(), 1024U);
+  for (std::size_t index = 0U; index < actual->size(); ++index) {
+    EXPECT_FLOAT_EQ((*actual)[index].x, (*expected)[index].x);
+    EXPECT_FLOAT_EQ((*actual)[index].y, (*expected)[index].y);
+    EXPECT_FLOAT_EQ((*actual)[index].z, (*expected)[index].z);
+  }
+}
+
+TEST_F(LidarOnlyOdometry, PendingTimerIsDemandDrivenAndResetCancelsIt)
+{
+  auto options = testOptions(true);
+  auto parameters = options.parameter_overrides();
+  parameters.emplace_back("require_point_time", false);
+  options.parameter_overrides(parameters);
+  LioOdometry node(options);
+  EXPECT_TRUE(LioOdometryTestPeer::timerCanceled(node));
+  LioOdometryTestPeer::cloud(node, cloudMessage(100));
+  EXPECT_FALSE(LioOdometryTestPeer::timerCanceled(node));
+  ASSERT_EQ(LioOdometryTestPeer::snapshot(node).pending_clouds, 1U);
+  LioOdometryTestPeer::resetEpoch(node);
+  EXPECT_TRUE(LioOdometryTestPeer::timerCanceled(node));
+  EXPECT_EQ(LioOdometryTestPeer::snapshot(node).pending_clouds, 0U);
+}
+
+TEST_F(LidarOnlyOdometry, ImuModeUsesManualLatestOnlyDdsTake)
+{
+  auto options = testOptions(true);
+  auto parameters = options.parameter_overrides();
+  parameters.emplace_back("cloud_subscription_depth", 20);
+  options.parameter_overrides(parameters);
+  LioOdometry node(options);
+  EXPECT_FALSE(LioOdometryTestPeer::rawCloudGroupAutoAdded(node));
+  EXPECT_EQ(LioOdometryTestPeer::actualCloudDepth(node), 1U);
+  EXPECT_TRUE(LioOdometryTestPeer::hasCloudTakeTimer(node));
+  EXPECT_EQ(node.get_parameter("cloud_subscription_depth").as_int(), 20);
+  EXPECT_NO_THROW(LioOdometryTestPeer::takeCloud(node));
+  EXPECT_EQ(LioOdometryTestPeer::cloudSamplesTaken(node), 0U);
+  EXPECT_EQ(LioOdometryTestPeer::snapshot(node).pending_clouds, 0U);
+}
+
+TEST_F(LidarOnlyOdometry, LidarOnlyRetainsAutomaticCallbackAndRequestedDdsDepth)
+{
+  auto options = testOptions(false);
+  auto parameters = options.parameter_overrides();
+  parameters.emplace_back("cloud_subscription_depth", 7);
+  options.parameter_overrides(parameters);
+  LioOdometry node(options);
+  EXPECT_TRUE(LioOdometryTestPeer::rawCloudGroupAutoAdded(node));
+  EXPECT_EQ(LioOdometryTestPeer::actualCloudDepth(node), 7U);
+  EXPECT_FALSE(LioOdometryTestPeer::hasCloudTakeTimer(node));
+  EXPECT_FALSE(LioOdometryTestPeer::snapshot(node).processing_timer);
+}
+
+TEST_F(LidarOnlyOdometry, ImuBatchTimerUsesManualTakeAndRetainsFullQueue)
+{
+  LioOdometry node(testOptions(true));
+  EXPECT_TRUE(LioOdometryTestPeer::hasImuTakeTimer(node));
+  EXPECT_FALSE(LioOdometryTestPeer::imuGroupAutoAdded(node));
+  EXPECT_EQ(LioOdometryTestPeer::actualImuDepth(node), 400U);
+  EXPECT_NO_THROW(LioOdometryTestPeer::takeImu(node));
+  const auto state = LioOdometryTestPeer::snapshot(node);
+  EXPECT_FALSE(state.corrected_initialized);
+  EXPECT_FALSE(state.live_initialized);
+  EXPECT_EQ(state.imu_samples, 0U);
+}
+
+TEST_F(LidarOnlyOdometry, DisabledImuHasNoBatchTimerOrSubscription)
+{
+  LioOdometry node(testOptions(false));
+  EXPECT_FALSE(LioOdometryTestPeer::hasImuTakeTimer(node));
+  EXPECT_FALSE(LioOdometryTestPeer::snapshot(node).imu_subscription);
+}
+
+TEST_F(LidarOnlyOdometry, ImuBatchDdsDeliveryPreservesBothOriginalTimestamps)
+{
+  // No robot inputs or executor spin: two synthetic loopback messages, bounded
+  // discovery/delivery waits, then the production manual-take method.
+  LioOdometry node(testOptions(true));
+  ASSERT_TRUE(LioOdometryTestPeer::seedImuState(node, 1000000000LL));
+  auto sender = std::make_shared<rclcpp::Node>("imu_batch_unit_test_sender");
+  auto publisher = sender->create_publisher<sensor_msgs::msg::Imu>(
+    node.get_parameter("imu_topic").as_string(), rclcpp::SensorDataQoS().keep_last(10));
+  const auto discovery_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (publisher->get_subscription_count() == 0U &&
+    std::chrono::steady_clock::now() < discovery_deadline)
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_GT(publisher->get_subscription_count(), 0U);
+  sensor_msgs::msg::Imu message;
+  message.header.frame_id = node.get_parameter("imu_frame").as_string();
+  message.header.stamp.sec = 1;
+  message.linear_acceleration.z = 9.80665;
+  message.header.stamp.nanosec = 5000000U;
+  publisher->publish(message);
+  message.header.stamp.nanosec = 10000000U;
+  publisher->publish(message);
+  const auto delivery_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  while (LioOdometryTestPeer::bufferedImuStamps(node).size() < 2U &&
+    std::chrono::steady_clock::now() < delivery_deadline)
+  {
+    LioOdometryTestPeer::takeImu(node);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  const auto stamps = LioOdometryTestPeer::bufferedImuStamps(node);
+  ASSERT_EQ(stamps.size(), 2U);
+  EXPECT_EQ(stamps[0], 1005000000LL);
+  EXPECT_EQ(stamps[1], 1010000000LL);
+}
+
+TEST_F(LidarOnlyOdometry, ImuCloudCallbackAppliesHalfHertzBudget)
+{
+  auto options = testOptions(true);
+  auto parameters = options.parameter_overrides();
+  parameters.emplace_back("require_point_time", false);
+  options.parameter_overrides(parameters);
+  LioOdometry node(options);
+  auto message = cloudMessage(100);
+  LioOdometryTestPeer::cloud(node, message);
+  message.header.stamp.nanosec += 100000000U;
+  LioOdometryTestPeer::cloud(node, message);
+  EXPECT_EQ(LioOdometryTestPeer::budgetSkipped(node), 1U);
+  EXPECT_EQ(LioOdometryTestPeer::snapshot(node).pending_clouds, 1U);
+  LioOdometryTestPeer::cloud(node, cloudMessage(101));
+  EXPECT_EQ(LioOdometryTestPeer::budgetSkipped(node), 2U);
+  EXPECT_EQ(LioOdometryTestPeer::snapshot(node).pending_clouds, 1U);
+  LioOdometryTestPeer::cloud(node, cloudMessage(102));
+  EXPECT_EQ(LioOdometryTestPeer::snapshot(node).pending_clouds, 2U);
+  LioOdometryTestPeer::resetEpoch(node);
+  LioOdometryTestPeer::cloud(node, cloudMessage(10));
+  EXPECT_EQ(LioOdometryTestPeer::snapshot(node).pending_clouds, 1U);
+  EXPECT_FALSE(LioOdometryTestPeer::timerCanceled(node));
+}
+
 TEST_F(LidarOnlyOdometry, ExplicitImuModeRetainsInitializationGate)
 {
   auto options = testOptions(true);
@@ -343,6 +615,38 @@ TEST_F(LidarOnlyOdometry, ExplicitImuModeRetainsInitializationGate)
 TEST_F(LidarOnlyOdometry, WheelAidingWithoutImuFailsExplicitly)
 {
   EXPECT_THROW(LioOdometry node(testOptions(false, true)), std::invalid_argument);
+}
+
+TEST_F(LidarOnlyOdometry, RejectsMinimumScanPointsAboveFixedPointCap)
+{
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({
+    rclcpp::Parameter(
+      "min_scan_points", static_cast<int>(LowComputeBudget::kMaxDeskewPoints) + 1)});
+  try {
+    LioOdometry node(options);
+    FAIL() << "min_scan_points above the hard cap must fail at startup";
+  } catch (const std::invalid_argument & error) {
+    EXPECT_NE(std::string(error.what()).find("min_scan_points"), std::string::npos);
+    EXPECT_NE(std::string(error.what()).find(
+        std::to_string(LowComputeBudget::kMaxDeskewPoints)), std::string::npos);
+  }
+}
+
+TEST_F(LidarOnlyOdometry, RejectsMinimumSubmapPointsAboveFixedPointCap)
+{
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({
+    rclcpp::Parameter(
+      "min_submap_points", static_cast<int>(LowComputeBudget::kMaxDeskewPoints) + 1)});
+  try {
+    LioOdometry node(options);
+    FAIL() << "min_submap_points above the hard cap must fail at startup";
+  } catch (const std::invalid_argument & error) {
+    EXPECT_NE(std::string(error.what()).find("min_submap_points"), std::string::npos);
+    EXPECT_NE(std::string(error.what()).find(
+        std::to_string(LowComputeBudget::kMaxDeskewPoints)), std::string::npos);
+  }
 }
 
 }  // namespace

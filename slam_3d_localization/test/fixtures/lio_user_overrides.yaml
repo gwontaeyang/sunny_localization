@@ -1,0 +1,15 @@
+slam_3d_lio_odometry:
+  ros__parameters:
+    odom_topic: /minimal_config/user_odom
+    cloud_topic: /minimal_config/user_cloud
+    imu_enabled: false
+    use_sim_time: false
+
+slam_3d_localizer:
+  ros__parameters:
+    odom_topic: /minimal_config/user_odom
+    cloud_subscription_depth: 7
+    require_exact_odom_for_update: false
+    publish_tf: false
+    map_path: /must_not_load_this_user_map.pcd
+    use_sim_time: false

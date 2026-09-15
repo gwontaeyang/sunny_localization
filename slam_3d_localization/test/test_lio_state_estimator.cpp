@@ -146,6 +146,89 @@ TEST(LioStateEstimator, OptionalBiasEstimationPreservesSuppliedBiasCompensation)
   EXPECT_NEAR(estimator.orientation().angularDistance(Eigen::Quaterniond::Identity()), 0.0, 1.0e-10);
 }
 
+TEST(LioStateEstimator, SparseFixedBiasPredictionMatchesIndependentDenseReference)
+{
+  const auto skew_reference = [](const Eigen::Vector3d & value) {
+      Eigen::Matrix3d matrix;
+      matrix << 0.0, -value.z(), value.y(), value.z(), 0.0, -value.x(),
+        -value.y(), value.x(), 0.0;
+      return matrix;
+    };
+  for (const bool estimate_bias : {false, true}) {
+    LioStateEstimator::Config config;
+    config.imu_bias_estimation_enabled = estimate_bias;
+    for (int orientation_index = 0; orientation_index < 3; ++orientation_index) {
+      LioStateEstimator estimator(config);
+      const Eigen::Quaterniond initial_orientation(
+        Eigen::AngleAxisd(
+          0.37 * orientation_index, Eigen::Vector3d(1.0, -2.0, 3.0).normalized()));
+      auto measurement = stationaryMeasurement(100 * kSecondNs);
+      measurement.angular_velocity_radps = Eigen::Vector3d(0.3, -0.2, 0.1);
+      ASSERT_TRUE(estimator.initialize(measurement, initial_orientation));
+      for (int index = 1; index <= 40; ++index) {
+        if (index % 7 == 0) {
+          auto pose = estimator.odomTBody();
+          pose.translation() += Eigen::Vector3d(0.03, -0.01, 0.02);
+          ASSERT_TRUE(estimator.correctBodyPose(pose, 0.03, 0.02));
+          ASSERT_TRUE(estimator.correctBodyForwardVelocity(0.2, 0.1));
+        }
+        measurement.stamp_ns += (3 + index % 5) * 1000000LL;
+        measurement.angular_velocity_radps =
+          Eigen::Vector3d(0.3 + 0.001 * index, -0.2, 0.1 - 0.002 * index);
+        measurement.linear_acceleration_mps2 =
+          Eigen::Vector3d(0.2 * std::sin(index), -0.3, 9.7 + 0.002 * index);
+        const double dt = (measurement.stamp_ns - estimator.stampNs()) * 1.0e-9;
+        const Eigen::Vector3d omega = 0.5 *
+          (estimator.lastMeasurement().angular_velocity_radps +
+          measurement.angular_velocity_radps) - estimator.gyroscopeBias();
+        const Eigen::Vector3d force = 0.5 *
+          (estimator.lastMeasurement().linear_acceleration_mps2 +
+          measurement.linear_acceleration_mps2) - estimator.accelerometerBias();
+        const Eigen::Matrix3d rotation = (estimator.orientation() * Eigen::Quaterniond(
+            Eigen::AngleAxisd(0.5 * omega.norm() * dt, omega.normalized()))).toRotationMatrix();
+        LioStateEstimator::Covariance dynamics = LioStateEstimator::Covariance::Zero();
+        dynamics.block<3, 3>(0, 3).setIdentity();
+        dynamics.block<3, 3>(3, 6) = -rotation * skew_reference(force);
+        dynamics.block<3, 3>(6, 6) = -skew_reference(omega);
+        Eigen::Matrix<double, 15, 12> jacobian = Eigen::Matrix<double, 15, 12>::Zero();
+        jacobian.block<3, 3>(3, 0) = rotation;
+        jacobian.block<3, 3>(6, 3).setIdentity();
+        Eigen::Matrix<double, 12, 12> noise = Eigen::Matrix<double, 12, 12>::Zero();
+        noise.diagonal().segment<3>(0).setConstant(
+          std::pow(config.accelerometer_noise_mps2_sqrt_hz, 2));
+        noise.diagonal().segment<3>(3).setConstant(
+          std::pow(config.gyroscope_noise_radps_sqrt_hz, 2));
+        if (estimate_bias) {
+          dynamics.block<3, 3>(3, 12) = -rotation;
+          dynamics.block<3, 3>(6, 9) = -Eigen::Matrix3d::Identity();
+          jacobian.block<3, 3>(9, 6).setIdentity();
+          jacobian.block<3, 3>(12, 9).setIdentity();
+          noise.diagonal().segment<3>(6).setConstant(
+            std::pow(config.gyroscope_bias_noise_radps2_sqrt_hz, 2));
+          noise.diagonal().segment<3>(9).setConstant(
+            std::pow(config.accelerometer_bias_noise_mps3_sqrt_hz, 2));
+        }
+        const LioStateEstimator::Covariance transition =
+          LioStateEstimator::Covariance::Identity() + dynamics * dt;
+        const LioStateEstimator::Covariance raw_reference =
+          transition * estimator.covariance() * transition.transpose() +
+          jacobian * noise * jacobian.transpose() * dt;
+        const LioStateEstimator::Covariance reference =
+          0.5 * (raw_reference + raw_reference.transpose());
+        ASSERT_EQ(estimator.propagate(measurement), ImuPropagationStatus::kApplied);
+        EXPECT_LT((estimator.covariance() - reference).cwiseAbs().maxCoeff(), 1.0e-12);
+        EXPECT_TRUE(estimator.covariance().isApprox(estimator.covariance().transpose(), 1.0e-12));
+        Eigen::SelfAdjointEigenSolver<LioStateEstimator::Covariance> solver(estimator.covariance());
+        ASSERT_EQ(solver.info(), Eigen::Success);
+        EXPECT_GE(solver.eigenvalues().minCoeff(), -1.0e-12);
+        if (!estimate_bias) {
+          expectFixedZeroImuBias(estimator);
+        }
+      }
+    }
+  }
+}
+
 TEST(LioStateEstimator, OptionalBiasEstimationRespondsToLidarPoseCorrection)
 {
   LioStateEstimator::Config config;

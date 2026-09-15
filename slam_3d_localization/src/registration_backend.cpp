@@ -1,6 +1,8 @@
 // Copyright 2026 Gole Robotics
 #include "slam_3d_localization/registration_backend.hpp"
 
+#include <pcl/common/transforms.h>
+#include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/registration/gicp.h>
 
 #ifdef SLAM_3D_LOCALIZATION_HAS_FAST_GICP
@@ -41,6 +43,33 @@ double elapsedMs(const Clock::time_point & start)
   return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
 }
 
+bool validateTarget(
+  const RegistrationBackend::CloudT::ConstPtr & source,
+  const RegistrationBackend::CloudT::ConstPtr & target,
+  const Eigen::Isometry3d & initial_guess,
+  const RegistrationBackend::CloudT::ConstPtr & cached_target,
+  const std::uint64_t revision, const std::uint64_t cached_revision)
+{
+  if (!source || source->empty() || !target || target->empty()) {
+    throw std::invalid_argument("registration source and target must be nonempty");
+  }
+  if (!initial_guess.matrix().allFinite()) {
+    throw std::invalid_argument("registration initial guess must be finite");
+  }
+  if (cached_target && target == cached_target && revision != cached_revision) {
+    throw std::logic_error("registration target revision changed without a target pointer change");
+  }
+  if (cached_target && revision == cached_revision && target != cached_target) {
+    throw std::logic_error("registration target pointer changed without a target revision change");
+  }
+  return cached_target && target == cached_target;
+}
+
+double rotationAngle(const Eigen::Matrix3d & rotation)
+{
+  return std::acos(std::clamp((rotation.trace() - 1.0) * 0.5, -1.0, 1.0));
+}
+
 template<typename RegistrationT>
 class InstrumentedRegistration : public RegistrationT
 {
@@ -77,29 +106,14 @@ public:
     const std::uint64_t target_revision,
     const Eigen::Isometry3d & initial_guess) override
   {
-    if (!source || source->empty() || !target || target->empty()) {
-      throw std::invalid_argument("registration source and target must be nonempty");
-    }
-    if (!initial_guess.matrix().allFinite()) {
-      throw std::invalid_argument("registration initial guess must be finite");
-    }
-
     RegistrationBackendResult result;
+    result.target_reused = validateTarget(
+      source, target, initial_guess, target_, target_revision, target_revision_);
     result.first_call = call_count_ == 0;
     result.target_revision = target_revision;
     const auto total_start = Clock::now();
 
-    if (target_ && target == target_ && target_revision != target_revision_) {
-      throw std::logic_error(
-              "registration target revision changed without a target pointer change");
-    }
-    if (target_ && target_revision == target_revision_) {
-      if (target != target_) {
-        throw std::logic_error(
-                "registration target pointer changed without a target revision change");
-      }
-      result.target_reused = true;
-    } else {
+    if (!result.target_reused) {
       const auto target_start = Clock::now();
       beforeTargetUpdate();
       registration_->setInputTarget(target);
@@ -119,10 +133,12 @@ public:
     afterAlign();
     result.align_runtime_ms = elapsedMs(align_start);
     result.converged = registration_->hasConverged();
+    result.accepted = result.converged;
     result.reason = result.converged ? "converged" : "not_converged";
     result.fitness = result.converged ?
       registration_->getFitnessScore(config_.max_correspondence_m) :
       std::numeric_limits<double>::infinity();
+    result.rmse_m = std::sqrt(std::max(0.0, result.fitness));
     result.target_T_source.matrix() =
       registration_->getFinalTransformation().template cast<double>();
     result.iterations = registration_->iterations();
@@ -155,6 +171,73 @@ protected:
   std::uint64_t target_upload_count_{0};
   std::uint64_t call_count_{0};
   double initialization_runtime_ms_{0.0};
+};
+
+class VoxelSurfelBackend final : public RegistrationBackend
+{
+public:
+  explicit VoxelSurfelBackend(const RegistrationBackendConfig & config)
+  : registration_(config.surfel)
+  {
+    if (!VoxelSurfelRegistration::isValidConfig(config.surfel)) {
+      throw std::invalid_argument("invalid voxel_surfel registration configuration");
+    }
+  }
+
+  const char * name() const noexcept override {return "voxel_surfel";}
+  bool isCuda() const noexcept override {return false;}
+  double initializationRuntimeMs() const noexcept override {return 0.0;}
+  std::string runtimeDescription() const override
+  {
+    return "Native voxel-surfel Gauss-Newton (CPU, immutable target surfel cache)";
+  }
+
+  RegistrationBackendResult align(
+    const CloudT::ConstPtr & source, const CloudT::ConstPtr & target,
+    const std::uint64_t target_revision, const Eigen::Isometry3d & initial_guess) override
+  {
+    RegistrationBackendResult result;
+    result.target_reused = validateTarget(
+      source, target, initial_guess, target_, target_revision, target_revision_);
+    const auto start = Clock::now();
+    result.first_call = call_count_ == 0U;
+    result.target_revision = target_revision;
+    if (!result.target_reused) {
+      const auto target_start = Clock::now();
+      auto prepared = registration_.prepareTarget(*target);
+      if (!prepared) {
+        throw std::logic_error("native registration target preparation failed");
+      }
+      prepared_target_ = std::move(prepared);
+      target_ = target;
+      target_revision_ = target_revision;
+      ++target_upload_count_;
+      result.target_update_runtime_ms = elapsedMs(target_start);
+    }
+    result.target_upload_count = target_upload_count_;
+    const auto align_start = Clock::now();
+    result.surfel = registration_.alignPrepared(*source, prepared_target_, initial_guess);
+    result.align_runtime_ms = elapsedMs(align_start);
+    result.target_T_source = result.surfel.target_T_source;
+    result.accepted = result.surfel.accepted;
+    result.converged = result.surfel.converged;
+    result.reason = result.surfel.reason;
+    result.rmse_m = result.surfel.rmse;
+    result.fitness = std::isfinite(result.rmse_m) ? result.rmse_m * result.rmse_m :
+      std::numeric_limits<double>::infinity();
+    result.iterations = result.surfel.iterations;
+    result.total_runtime_ms = elapsedMs(start);
+    ++call_count_;
+    return result;
+  }
+
+private:
+  VoxelSurfelRegistration registration_;
+  VoxelSurfelRegistration::PreparedTargetPtr prepared_target_;
+  CloudT::ConstPtr target_;
+  std::uint64_t target_revision_{0};
+  std::uint64_t target_upload_count_{0};
+  std::uint64_t call_count_{0};
 };
 
 class PclGicpBackend final :
@@ -381,9 +464,9 @@ private:
 {
   const auto names = availableRegistrationBackends();
   std::ostringstream stream;
-  stream << "voxel_surfel";
-  for (const auto & name : names) {
-    stream << ", " << name;
+  for (std::size_t index = 0; index < names.size(); ++index) {
+    if (index != 0U) {stream << ", ";}
+    stream << names[index];
   }
   return stream.str();
 }
@@ -392,13 +475,13 @@ private:
 
 bool isKnownRegistrationBackend(const std::string & method) noexcept
 {
-  return method == "gicp" || method == "fast_gicp" ||
+  return method == "voxel_surfel" || method == "gicp" || method == "fast_gicp" ||
          method == "fast_vgicp_cuda";
 }
 
 std::vector<std::string> availableRegistrationBackends()
 {
-  std::vector<std::string> methods{"gicp"};
+  std::vector<std::string> methods{"gicp", "voxel_surfel"};
 #ifdef SLAM_3D_LOCALIZATION_HAS_FAST_GICP
   methods.emplace_back("fast_gicp");
 #endif
@@ -422,9 +505,128 @@ RegistrationBackendBuildInfo registrationBackendBuildInfo()
   return info;
 }
 
+RegistrationOverlap evaluateRegistrationOverlap(
+  const RegistrationBackend::CloudT::ConstPtr & source,
+  const RegistrationBackend::CloudT::ConstPtr & target,
+  const Eigen::Isometry3d & target_T_source, const double max_correspondence_m)
+{
+  using CloudT = RegistrationBackend::CloudT;
+  using PointT = RegistrationBackend::PointT;
+  RegistrationOverlap result;
+  const Eigen::Matrix3d linear = target_T_source.linear();
+  result.transform_determinant = linear.determinant();
+  result.transform_orthogonality_error =
+    (linear.transpose() * linear - Eigen::Matrix3d::Identity()).norm();
+  result.inlier_rmse_m = std::numeric_limits<double>::infinity();
+  if (!source || !target || target->empty() || !target_T_source.matrix().allFinite() ||
+    max_correspondence_m <= 0.0)
+  {
+    return result;
+  }
+  CloudT aligned;
+  pcl::transformPointCloud(*source, aligned, target_T_source.matrix().cast<float>());
+  pcl::KdTreeFLANN<PointT> tree;
+  tree.setInputCloud(target);
+  const double max_distance_sq = max_correspondence_m * max_correspondence_m;
+  int valid_points = 0;
+  double squared_error_sum = 0.0;
+  std::vector<int> indices(1);
+  std::vector<float> squared_distances(1);
+  for (const auto & point : aligned.points) {
+    if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) {
+      continue;
+    }
+    ++valid_points;
+    if (tree.nearestKSearch(point, 1, indices, squared_distances) <= 0 ||
+      squared_distances.front() > max_distance_sq)
+    {
+      continue;
+    }
+    ++result.inlier_count;
+    squared_error_sum += squared_distances.front();
+  }
+  if (valid_points > 0) {
+    result.inlier_ratio = static_cast<double>(result.inlier_count) /
+      static_cast<double>(valid_points);
+  }
+  if (result.inlier_count > 0) {
+    result.inlier_rmse_m = std::sqrt(
+      squared_error_sum / static_cast<double>(result.inlier_count));
+  }
+  return result;
+}
+
+RegistrationAcceptance evaluateLioRegistration(
+  const RegistrationBackendResult & result, const Eigen::Isometry3d & prediction,
+  const RegistrationQualityLimits & limits)
+{
+  if (!result.accepted) {return {false, result.reason};}
+  if (!result.target_T_source.matrix().allFinite() || !std::isfinite(result.fitness)) {
+    return {false, "invalid_result"};
+  }
+  if (result.fitness > limits.fitness_threshold) {return {false, "fitness"};}
+  const Eigen::Isometry3d correction = prediction.inverse() * result.target_T_source;
+  const double translation = correction.translation().norm();
+  const double rotation_deg = rotationAngle(correction.linear()) * 57.295779513082320876;
+  if (!std::isfinite(translation) || !std::isfinite(rotation_deg) ||
+    translation > limits.max_correction_translation_m)
+  {
+    return {false, "translation_correction"};
+  }
+  if (rotation_deg > limits.max_correction_rotation_deg) {
+    return {false, "rotation_correction"};
+  }
+  return {true, result.reason};
+}
+
+RegistrationAcceptance evaluateMapRegistration(
+  const RegistrationBackendResult & result, const RegistrationOverlap & overlap,
+  const bool use_surfel_gates, const Eigen::Isometry3d & prediction,
+  const RegistrationQualityLimits & limits)
+{
+  if (!result.accepted) {
+    return {false, use_surfel_gates ? "surfel_" + result.reason : result.reason};
+  }
+  if (!result.target_T_source.matrix().allFinite() ||
+    (use_surfel_gates && (std::abs(overlap.transform_determinant - 1.0) > 0.05 ||
+    overlap.transform_orthogonality_error > 0.05)))
+  {
+    return {false, "invalid_transform"};
+  }
+  if (!std::isfinite(result.fitness) || result.fitness > limits.fitness_threshold) {
+    return {false, "fitness"};
+  }
+  if (use_surfel_gates &&
+    (overlap.inlier_count <= 0 || overlap.inlier_ratio < limits.min_inlier_ratio))
+  {
+    return {false, "inlier_ratio"};
+  }
+  if (use_surfel_gates && (!std::isfinite(overlap.inlier_rmse_m) ||
+    overlap.inlier_rmse_m > limits.max_inlier_rmse_m))
+  {
+    return {false, "inlier_rmse"};
+  }
+  const Eigen::Isometry3d correction = prediction.inverse() * result.target_T_source;
+  const double translation = correction.translation().norm();
+  const double rotation_deg = rotationAngle(correction.linear()) * 180.0 / M_PI;
+  if (!std::isfinite(translation) || !std::isfinite(rotation_deg)) {
+    return {false, "invalid_correction"};
+  }
+  if (translation > limits.max_correction_translation_m) {
+    return {false, "translation_correction"};
+  }
+  if (rotation_deg > limits.max_correction_rotation_deg) {
+    return {false, "rotation_correction"};
+  }
+  return {true, "accepted"};
+}
+
 std::unique_ptr<RegistrationBackend> createRegistrationBackend(
   const RegistrationBackendConfig & config)
 {
+  if (config.method == "voxel_surfel") {
+    return std::make_unique<VoxelSurfelBackend>(config);
+  }
   if (config.method == "gicp") {
     return std::make_unique<PclGicpBackend>(config);
   }

@@ -118,6 +118,10 @@ private:
   static Eigen::Vector3d rotationVector(const Eigen::Quaterniond & quaternion);
   void applyErrorState(const Vector15 & error_state);
   void enforceFixedImuBias();
+  Covariance predictCovariance(
+    const Eigen::Matrix3d & odom_R_base_mid,
+    const Eigen::Vector3d & specific_force,
+    const Eigen::Vector3d & angular_velocity, double dt) const;
 
   Config config_;
   bool initialized_{false};

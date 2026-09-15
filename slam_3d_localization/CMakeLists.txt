@@ -23,7 +23,6 @@ find_package(nav_msgs REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
-find_package(slam_3d_core REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
@@ -108,12 +107,45 @@ if(SLAM_3D_LOCALIZATION_ENABLE_FAST_VGICP_CUDA)
     "slam_3d_localization: FastVGICPCuda backend link probe passed; dependency architectures=${SLAM_3D_LOCALIZATION_FAST_GICP_CUDA_ARCHITECTURES}")
 endif()
 
+# The localization optimizer is self-contained: do not import the SLAM
+# pose-graph package (and its configure-time Ceres dependency).
+add_library(localization_voxel_surfel
+  src/voxel_surfel_registration.cpp
+)
+target_include_directories(localization_voxel_surfel PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+  ${PCL_INCLUDE_DIRS}
+)
+target_link_libraries(localization_voxel_surfel Eigen3::Eigen ${PCL_LIBRARIES})
+
+add_library(localization_registration_backend src/registration_backend.cpp)
+target_include_directories(localization_registration_backend PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+  ${PCL_INCLUDE_DIRS}
+)
+target_link_libraries(localization_registration_backend
+  localization_voxel_surfel ${PCL_LIBRARIES} Eigen3::Eigen)
+if(_slam_3d_localization_has_fast_gicp)
+  target_include_directories(localization_registration_backend PRIVATE ${fast_gicp_INCLUDE_DIRS})
+  target_link_libraries(localization_registration_backend ${fast_gicp_LIBRARIES})
+  target_compile_definitions(localization_registration_backend PRIVATE
+    SLAM_3D_LOCALIZATION_HAS_FAST_GICP=1
+    "SLAM_3D_LOCALIZATION_FAST_GICP_REVISION=\"${SLAM_3D_LOCALIZATION_FAST_GICP_REVISION}\"")
+endif()
+if(_slam_3d_localization_has_fast_vgicp_cuda)
+  target_link_libraries(localization_registration_backend CUDA::cudart)
+  target_compile_definitions(localization_registration_backend PRIVATE
+    SLAM_3D_LOCALIZATION_HAS_FAST_VGICP_CUDA=1
+    "SLAM_3D_LOCALIZATION_CUDA_ARCHITECTURES=\"${_slam_3d_localization_cuda_architectures_definition}\"")
+endif()
+
 add_library(slam_3d_localizer
   src/cloud_freshness_guard.cpp
   src/constant_velocity_predictor.cpp
   src/map_odom_transform_cache.cpp
   src/odom_pose_buffer.cpp
-  src/registration_backend.cpp
   src/slam_3d_localizer.cpp
 )
 target_include_directories(slam_3d_localizer PUBLIC
@@ -126,23 +158,10 @@ ament_target_dependencies(slam_3d_localizer
   std_srvs tf2 tf2_ros
 )
 target_link_libraries(slam_3d_localizer
-  slam_3d_core::voxel_surfel_registration
+  localization_registration_backend
   ${PCL_LIBRARIES}
   Eigen3::Eigen
 )
-if(_slam_3d_localization_has_fast_gicp)
-  target_include_directories(slam_3d_localizer PRIVATE ${fast_gicp_INCLUDE_DIRS})
-  target_link_libraries(slam_3d_localizer ${fast_gicp_LIBRARIES})
-  target_compile_definitions(slam_3d_localizer PRIVATE
-    SLAM_3D_LOCALIZATION_HAS_FAST_GICP=1
-    "SLAM_3D_LOCALIZATION_FAST_GICP_REVISION=\"${SLAM_3D_LOCALIZATION_FAST_GICP_REVISION}\"")
-endif()
-if(_slam_3d_localization_has_fast_vgicp_cuda)
-  target_link_libraries(slam_3d_localizer CUDA::cudart)
-  target_compile_definitions(slam_3d_localizer PRIVATE
-    SLAM_3D_LOCALIZATION_HAS_FAST_VGICP_CUDA=1
-    "SLAM_3D_LOCALIZATION_CUDA_ARCHITECTURES=\"${_slam_3d_localization_cuda_architectures_definition}\"")
-endif()
 
 add_library(lio_state_estimator
   src/imu_initializer.cpp
@@ -168,7 +187,7 @@ ament_target_dependencies(slam_3d_lio_odometry
 )
 target_link_libraries(slam_3d_lio_odometry
   lio_state_estimator
-  slam_3d_core::voxel_surfel_registration
+  localization_registration_backend
   ${PCL_LIBRARIES}
   Eigen3::Eigen
 )
@@ -182,6 +201,8 @@ ament_target_dependencies(slam_3d_lio_odometry_node rclcpp)
 target_link_libraries(slam_3d_lio_odometry_node slam_3d_lio_odometry)
 
 install(TARGETS
+  localization_voxel_surfel
+  localization_registration_backend
   lio_state_estimator
   slam_3d_lio_odometry
   slam_3d_lio_odometry_node
@@ -206,6 +227,29 @@ install(FILES README.md DESTINATION share/${PROJECT_NAME})
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_cmake_pytest REQUIRED)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  ament_add_gtest(test_low_compute_budget test/test_low_compute_budget.cpp)
+  target_include_directories(test_low_compute_budget PRIVATE include)
+  # Tests consume the launch profile itself rather than a second copy of its defaults.
+  set(_lio_profile_file "${CMAKE_CURRENT_BINARY_DIR}/lio_pipeline_defaults.yaml")
+  add_custom_command(
+    OUTPUT "${_lio_profile_file}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/launch/lio_profile.py"
+      --output "${_lio_profile_file}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/launch/lio_profile.py"
+    VERBATIM
+  )
+  add_custom_target(lio_pipeline_defaults DEPENDS "${_lio_profile_file}")
+  ament_add_gtest(test_voxel_surfel_registration test/test_voxel_surfel_registration.cpp)
+  target_link_libraries(test_voxel_surfel_registration localization_voxel_surfel)
+  ament_add_gtest(test_minimal_config test/test_minimal_config.cpp TIMEOUT 60)
+  add_dependencies(test_minimal_config lio_pipeline_defaults)
+  target_link_libraries(test_minimal_config slam_3d_localizer slam_3d_lio_odometry)
+  target_compile_definitions(test_minimal_config PRIVATE
+    "SLAM_3D_LOCALIZATION_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\""
+    "SLAM_3D_LOCALIZATION_LIO_PROFILE_FILE=\"${_lio_profile_file}\"")
+  set_tests_properties(test_minimal_config PROPERTIES
+    ENVIRONMENT "ROS_LOCALHOST_ONLY=1;ROS_DOMAIN_ID=224")
   ament_add_gtest(
     test_cloud_freshness_guard
     test/test_cloud_freshness_guard.cpp
@@ -224,7 +268,7 @@ if(BUILD_TESTING)
   ament_add_gtest(test_odom_pose_buffer test/test_odom_pose_buffer.cpp)
   target_link_libraries(test_odom_pose_buffer slam_3d_localizer)
   ament_add_gtest(test_registration_backend test/test_registration_backend.cpp)
-  target_link_libraries(test_registration_backend slam_3d_localizer)
+  target_link_libraries(test_registration_backend localization_registration_backend)
   ament_add_gtest(test_imu_initializer test/test_imu_initializer.cpp)
   target_link_libraries(test_imu_initializer lio_state_estimator)
   ament_add_gtest(test_lio_state_estimator test/test_lio_state_estimator.cpp)

@@ -172,6 +172,63 @@ ImuPropagationStatus LioStateEstimator::propagate(const ImuMeasurement & measure
   const Eigen::Quaterniond candidate_orientation =
     (orientation_ * deltaQuaternion(angular_velocity * dt)).normalized();
 
+  const Covariance candidate_covariance = predictCovariance(
+    odom_R_base_mid, specific_force, angular_velocity, dt);
+  if (!candidate_position.allFinite() || !candidate_velocity.allFinite() ||
+    !candidate_orientation.coeffs().allFinite() || candidate_orientation.norm() < 1.0e-9 ||
+    !candidate_covariance.allFinite() ||
+    (candidate_covariance.diagonal().array() < -1.0e-10).any())
+  {
+    return ImuPropagationStatus::kNumericalFailure;
+  }
+
+  position_ = candidate_position;
+  velocity_ = candidate_velocity;
+  orientation_ = candidate_orientation;
+  covariance_ = candidate_covariance;
+  enforceFixedImuBias();
+
+  stamp_ns_ = measurement.stamp_ns;
+  last_measurement_ = measurement;
+  return ImuPropagationStatus::kApplied;
+}
+
+LioStateEstimator::Covariance LioStateEstimator::predictCovariance(
+  const Eigen::Matrix3d & odom_R_base_mid,
+  const Eigen::Vector3d & specific_force,
+  const Eigen::Vector3d & angular_velocity, const double dt) const
+{
+  if (!config_.imu_bias_estimation_enabled) {
+    // Fixed bias rows/columns are identically zero. Apply the exact sparse
+    // nine-state transition in blocks, retaining every position/velocity/
+    // orientation cross-covariance; this is not a diagonal approximation.
+    using Matrix9 = Eigen::Matrix<double, 9, 9>;
+    const Eigen::Matrix3d force_coupling = -odom_R_base_mid * skew(specific_force) * dt;
+    const Eigen::Matrix3d rotation_transition =
+      Eigen::Matrix3d::Identity() - skew(angular_velocity) * dt;
+    const auto prior = covariance_.topLeftCorner<9, 9>();
+    Matrix9 left;
+    left.topRows<3>() = prior.topRows<3>() + dt * prior.middleRows<3>(3);
+    left.middleRows<3>(3) = prior.middleRows<3>(3) + force_coupling * prior.bottomRows<3>();
+    left.bottomRows<3>() = rotation_transition * prior.bottomRows<3>();
+    Matrix9 active;
+    active.leftCols<3>() = left.leftCols<3>() + dt * left.middleCols<3>(3);
+    active.middleCols<3>(3) =
+      left.middleCols<3>(3) + left.rightCols<3>() * force_coupling.transpose();
+    active.rightCols<3>() = left.rightCols<3>() * rotation_transition.transpose();
+    // Isotropic accelerometer noise is unchanged by the orthonormal rotation.
+    active.diagonal().segment<3>(3).array() +=
+      config_.accelerometer_noise_mps2_sqrt_hz *
+      config_.accelerometer_noise_mps2_sqrt_hz * dt;
+    active.diagonal().segment<3>(6).array() +=
+      config_.gyroscope_noise_radps_sqrt_hz *
+      config_.gyroscope_noise_radps_sqrt_hz * dt;
+    Covariance predicted = Covariance::Zero();
+    predicted.topLeftCorner<9, 9>() = 0.5 * (active + active.transpose());
+    return predicted;
+  }
+
+  // Optional bias learning keeps the existing full error-state formulation.
   Covariance dynamics = Covariance::Zero();
   dynamics.block<3, 3>(0, 3).setIdentity();
   dynamics.block<3, 3>(3, 6) = -odom_R_base_mid * skew(specific_force);
@@ -206,24 +263,7 @@ ImuPropagationStatus LioStateEstimator::propagate(const ImuMeasurement & measure
   }
   Covariance candidate_covariance = transition * covariance_ * transition.transpose() +
     noise_jacobian * noise * noise_jacobian.transpose() * dt;
-  candidate_covariance = 0.5 * (candidate_covariance + candidate_covariance.transpose());
-  if (!candidate_position.allFinite() || !candidate_velocity.allFinite() ||
-    !candidate_orientation.coeffs().allFinite() || candidate_orientation.norm() < 1.0e-9 ||
-    !candidate_covariance.allFinite() ||
-    (candidate_covariance.diagonal().array() < -1.0e-10).any())
-  {
-    return ImuPropagationStatus::kNumericalFailure;
-  }
-
-  position_ = candidate_position;
-  velocity_ = candidate_velocity;
-  orientation_ = candidate_orientation;
-  covariance_ = candidate_covariance;
-  enforceFixedImuBias();
-
-  stamp_ns_ = measurement.stamp_ns;
-  last_measurement_ = measurement;
-  return ImuPropagationStatus::kApplied;
+  return 0.5 * (candidate_covariance + candidate_covariance.transpose());
 }
 
 ImuPropagationStatus LioStateEstimator::propagateTo(
