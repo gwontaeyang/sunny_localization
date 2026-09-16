@@ -18,6 +18,11 @@ def generate_launch_description():
     use_sim_time_arg = DeclareLaunchArgument(
         "use_sim_time", default_value="false", description="Use simulation time"
     )
+    enable_3d_estimation_arg = DeclareLaunchArgument(
+        "enable_3d_estimation",
+        default_value="true",
+        description="Enable 3D odometry; false selects planar 2D estimation",
+    )
     load_initial_gyro_bias_arg = DeclareLaunchArgument(
         "load_initial_gyro_bias",
         default_value="false",
@@ -52,6 +57,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         use_sim_time_arg,
+        enable_3d_estimation_arg,
         load_initial_gyro_bias_arg,
         gyro_bias_yaml_path_arg,
         allow_initial_gyro_bias_fallback_arg,
@@ -67,6 +73,11 @@ def generate_launch_description():
                 {'odom_estimator_type': 'EKF'},
                 {'node_name': 'odom_estimation_node'},
                 {"use_sim_time": use_sim_time},
+                {
+                    "enable_3d_estimation": ParameterValue(
+                        LaunchConfiguration("enable_3d_estimation"), value_type=bool
+                    )
+                },
                 {
                     "load_initial_gyro_bias": ParameterValue(
                         load_initial_gyro_bias, value_type=bool

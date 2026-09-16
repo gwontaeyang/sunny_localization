@@ -26,6 +26,7 @@ def launch_setup(context, *args, **kwargs):
         [EnvironmentVariable("HOME"), ".ros", "db", "maps", LaunchConfiguration("map")]
     )
     system_type = LaunchConfiguration("type").perform(context).strip().lower() or "apart"
+    robot_model = LaunchConfiguration("robot_model").perform(context).strip().lower()
     mode = LaunchConfiguration("mode").perform(context).strip().upper() or "NAV"
 
     actions = [
@@ -34,6 +35,7 @@ def launch_setup(context, *args, **kwargs):
             "odom_estimation.launch.py",
             {
                 "use_sim_time": use_sim_time,
+                "enable_3d_estimation": "false" if robot_model == "rover" else "true",
                 "load_initial_gyro_bias": LaunchConfiguration("load_initial_gyro_bias"),
                 "gyro_bias_yaml_path": LaunchConfiguration("gyro_bias_yaml_path"),
                 "allow_initial_gyro_bias_fallback": LaunchConfiguration(
