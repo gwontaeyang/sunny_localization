@@ -1,14 +1,15 @@
 #include "odom_estimation/odom_estimator/odom_estimator_ekf.hpp"
-#include "kinematics/kinematics.hpp"
+#include "odom_estimation/attitude_propagation.hpp"
+#include "odom_estimation/measurement_validation.hpp"
+#include "odom_estimation/motion_projection.hpp"
 
 namespace gole {
 namespace odom_estimation {
 
 OdomEstimatorEKF::OdomEstimatorEKF(rclcpp_lifecycle::LifecycleNode* node,
                            std::shared_ptr<spdlog::logger> logger,
-                           std::shared_ptr<diagnostic::DiagnosticManager> diagnostic_manager,
                            const Params& params)
-    : OdomEstimatorBase(node, logger, diagnostic_manager, params)
+    : OdomEstimatorBase(node, logger, params)
 {
     sensor_fusion_timer_ = node_->create_wall_timer(
         std::chrono::milliseconds(20),
@@ -18,11 +19,17 @@ OdomEstimatorEKF::OdomEstimatorEKF(rclcpp_lifecycle::LifecycleNode* node,
 void OdomEstimatorEKF::findInitPose(const geometry_msgs::msg::PoseWithCovarianceStamped& initial_guess)
 {
     logger_->info("Finding initial pose using observation data...");
-    double applied_gyro_bias = params_.initial_gyro_bias_z;
+    std::array<double, 3> applied_gyro_bias{
+        params_.initial_gyro_bias_x,
+        params_.initial_gyro_bias_y,
+        params_.initial_gyro_bias_z};
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         if (is_init_.load()) {
-            applied_gyro_bias = current_state_.mu(5);
+            applied_gyro_bias = {
+                current_state_.mu(9),
+                current_state_.mu(10),
+                current_state_.mu(5)};
         }
         current_state_.setPose(
             initial_guess.pose.pose.position.x,
@@ -37,9 +44,16 @@ void OdomEstimatorEKF::findInitPose(const geometry_msgs::msg::PoseWithCovariance
             0.0,    // initial angular velocity
             applied_gyro_bias
         );
+        if (params_.enable_3d_estimation) {
+            current_state_.mu(6) = initial_guess.pose.pose.position.z;
+        } else {
+            current_state_.mu(6) = 0.0;
+            current_state_.mu(7) = 0.0;
+            current_state_.mu(8) = 0.0;
+        }
         // Initialize covariance matrix with appropriate initial uncertainty
         // Reset covariance to reflect initial pose uncertainty for full state (robot + landmark)
-        int total_state_size = State::getTotalStateSize();  // robot(6) + landmark(3)
+        int total_state_size = State::getTotalStateSize();  // robot(11) + landmark(3)
         int robot_state_size = State::getRobotStateSize();
         current_state_.sigma = Eigen::MatrixXd::Zero(total_state_size, total_state_size);
 
@@ -51,10 +65,21 @@ void OdomEstimatorEKF::findInitPose(const geometry_msgs::msg::PoseWithCovariance
         // expected to be accurate, but still non-zero to avoid infinite trust.
         current_state_.sigma(0, 0) = pose_variance_or_default(initial_guess.pose.covariance[0], 0.01);
         current_state_.sigma(1, 1) = pose_variance_or_default(initial_guess.pose.covariance[7], 0.01);
-        current_state_.sigma(2, 2) = pose_variance_or_default(initial_guess.pose.covariance[35], 0.0076);
+        current_state_.sigma(2, 2) = pose_variance_or_default(
+            initial_guess.pose.covariance[35], params_.initial_yaw_covariance);
         current_state_.sigma(3, 3) = 0.002 * 0.002;  // v variance (2mm/s std)
         current_state_.sigma(4, 4) = (0.05 * M_PI / 180.0) * (0.05 * M_PI / 180.0);  // w variance (0.05°/s std)
-        current_state_.sigma(5, 5) = (0.5 * M_PI / 180.0) * (0.5 * M_PI / 180.0);  // gyro bias variance (0.5°/s std)
+        current_state_.sigma(5, 5) = params_.initial_gyro_bias_covariance;
+        if (params_.enable_3d_estimation) {
+            current_state_.sigma(6, 6) = pose_variance_or_default(
+                initial_guess.pose.covariance[14], params_.initial_z_covariance);
+            current_state_.sigma(7, 7) = pose_variance_or_default(
+                initial_guess.pose.covariance[21], params_.initial_roll_pitch_covariance);
+            current_state_.sigma(8, 8) = pose_variance_or_default(
+                initial_guess.pose.covariance[28], params_.initial_roll_pitch_covariance);
+        }
+        current_state_.sigma(9, 9) = params_.initial_gyro_bias_covariance;
+        current_state_.sigma(10, 10) = params_.initial_gyro_bias_covariance;
 
         // Set landmark initial covariance (large uncertainty, independent of robot)
         current_state_.sigma(robot_state_size + 0, robot_state_size + 0) = 100.0;         // lm_x variance (10m std)
@@ -69,39 +94,43 @@ void OdomEstimatorEKF::findInitPose(const geometry_msgs::msg::PoseWithCovariance
 
     {
         std::lock_guard<std::mutex> lock(measurement_mutex_);
-        has_new_wheel_ = false;
-        has_new_imu_ = false;
-        latest_wheel_odom_.reset();
-        latest_imu_.reset();
         wheel_odom_queue_.clear();
         imu_queue_.clear();
+        first_sensor_time_aligned_ = false;
+        has_wheel_measurement_ = false;
+        gyro_bias_initialized_ =
+            params_.load_initial_gyro_bias || !params_.gyro_initial_bias_enabled;
+        last_received_wheel_stamp_.reset();
+        last_received_imu_stamp_.reset();
+        last_accepted_wheel_v_.reset();
+        latest_wheel_angular_z_.reset();
+        last_accepted_gyro_z_.reset();
+        last_body_angular_velocity_ = geometry_msgs::msg::Vector3();
+        stationary_start_time_.reset();
+        stationary_gyro_sum_.setZero();
+        stationary_gyro_samples_ = 0;
     }
     lm_covariance_history_.clear();
     landmark_initialized_ = false;
 
-    auto angle = Eigen::Quaterniond(initial_guess.pose.pose.orientation.w,
-                        initial_guess.pose.pose.orientation.x,
-                        initial_guess.pose.pose.orientation.y,
-                        initial_guess.pose.pose.orientation.z);
-    auto time = rclcpp::Time(initial_guess.header.stamp);
-
-    // The initial pose used by this odom_estimator is an odom-frame seed for the
-    // EKF state. Keep map->odom as identity here to avoid applying the same
-    // pose both in state (odom->base_link) and in TF (map->odom).
-    Eigen::Vector3d map_to_odom_pos(0.0, 0.0, 0.0);
-    Eigen::Quaterniond map_to_odom_rot(1.0, 0.0, 0.0, 0.0);
-    updateMapToOdomTransform(map_to_odom_pos, map_to_odom_rot, time);
+    const Eigen::Quaterniond angle(
+        initial_guess.pose.pose.orientation.w,
+        initial_guess.pose.pose.orientation.x,
+        initial_guess.pose.pose.orientation.y,
+        initial_guess.pose.pose.orientation.z);
 
     // Mark as initialized after finding the pose
     is_init_.store(true);
 
     Eigen::Matrix3d R = angle.toRotationMatrix();
     double yaw = std::atan2(R(1, 0), R(0, 0));
-    logger_->info("Initial pose set at x={:.3f}, y={:.3f}, yaw={:.3f}°, gyro_bias_z={:.6f}°/s",
+    logger_->info("Initial pose set at x={:.3f}, y={:.3f}, yaw={:.3f}°, gyro_bias=[{:.6f}, {:.6f}, {:.6f}]°/s",
                   initial_guess.pose.pose.position.x,
                   initial_guess.pose.pose.position.y,
                   yaw * 180.0 / M_PI,
-                  applied_gyro_bias * 180.0 / M_PI);
+                  applied_gyro_bias[0] * 180.0 / M_PI,
+                  applied_gyro_bias[1] * 180.0 / M_PI,
+                  applied_gyro_bias[2] * 180.0 / M_PI);
 }
 
 void OdomEstimatorEKF::processInitialPose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr pose)
@@ -134,8 +163,6 @@ void OdomEstimatorEKF::processSensorFusionTick()
         std::lock_guard<std::mutex> lock(measurement_mutex_);
         wheel_queue.swap(wheel_odom_queue_);
         imu_queue.swap(imu_queue_);
-        has_new_wheel_ = false;
-        has_new_imu_ = false;
     }
 
     if (wheel_queue.empty() && imu_queue.empty()) {
@@ -144,11 +171,14 @@ void OdomEstimatorEKF::processSensorFusionTick()
     }
 
     double last_v;
-    double last_w;
+    geometry_msgs::msg::Vector3 last_body_angular_velocity;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         last_v = current_state_.mu(3);
-        last_w = current_state_.mu(4);
+    }
+    {
+        std::lock_guard<std::mutex> lock(measurement_mutex_);
+        last_body_angular_velocity = last_body_angular_velocity_;
     }
 
     auto stamp_of_wheel = [](const nav_msgs::msg::Odometry::SharedPtr& msg) {
@@ -163,13 +193,28 @@ void OdomEstimatorEKF::processSensorFusionTick()
         rclcpp::Time state_time;
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
+            if (!first_sensor_time_aligned_) {
+                current_state_.time = measurement_time;
+                first_sensor_time_aligned_ = true;
+                return true;
+            }
             state_time = current_state_.time;
         }
 
         const double dt = (measurement_time - state_time).seconds();
         if (dt < -1e-4) {
-            logger_->debug("[processSensorFusionTick] Skipping stale measurement: dt={:.6f}", dt);
+            logger_->warn("[processSensorFusionTick] Skipping stale measurement: dt={:.6f}", dt);
             return false;
+        }
+
+        if (dt > params_.max_prediction_dt) {
+            logger_->warn(
+                "[processSensorFusionTick] Large sensor dt {:.3f}s exceeds {:.3f}s; "
+                "skipping propagation and realigning time",
+                dt, params_.max_prediction_dt);
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            current_state_.time = measurement_time;
+            return true;
         }
 
         if (!prediction(cmd_vel, dt)) {
@@ -189,31 +234,40 @@ void OdomEstimatorEKF::processSensorFusionTick()
 
         auto cmd_vel = std::make_shared<geometry_msgs::msg::Twist>();
         cmd_vel->linear.x = last_v;
-        cmd_vel->angular.z = last_w;
+        cmd_vel->angular = last_body_angular_velocity;
 
         if (use_wheel) {
             auto wheel_odom = wheel_queue.front();
             wheel_queue.pop_front();
-            last_v = wheel_odom->twist.twist.linear.x;
-            cmd_vel->linear.x = last_v;
 
-            if (process_until(stamp_of_wheel(wheel_odom), cmd_vel) && !correctionWheel(wheel_odom)) {
-                logger_->warn("[processSensorFusionTick] Wheel correction failed");
+            if (process_until(stamp_of_wheel(wheel_odom), cmd_vel)) {
+                if (!correctionWheel(wheel_odom)) {
+                    logger_->warn("[processSensorFusionTick] Wheel correction failed");
+                } else {
+                    last_v = wheel_odom->twist.twist.linear.x;
+                }
             }
         } else {
             auto imu = imu_queue.front();
             imu_queue.pop_front();
-            last_w = imu->angular_velocity.z;
-            cmd_vel->angular.z = last_w;
 
-            if (process_until(stamp_of_imu(imu), cmd_vel) && !correctionImu(imu)) {
-                logger_->warn("[processSensorFusionTick] IMU correction failed");
+            if (process_until(stamp_of_imu(imu), cmd_vel)) {
+                if (!correctionImu(imu)) {
+                    logger_->warn("[processSensorFusionTick] IMU correction failed");
+                } else {
+                    last_body_angular_velocity = imu->angular_velocity;
+                }
             }
         }
     }
 
+    {
+        std::lock_guard<std::mutex> lock(measurement_mutex_);
+        last_body_angular_velocity_ = last_body_angular_velocity;
+    }
+
     auto result_odom = state2Msg();
-    triggerNotify(WHEEL_PROCESSED_EVENT, std::make_any<nav_msgs::msg::Odometry>(result_odom));
+    triggerNotify(ODOMETRY_UPDATED_EVENT, std::make_any<nav_msgs::msg::Odometry>(result_odom));
 
     is_doing_odom_estimation_.store(false);
 }
@@ -276,36 +330,44 @@ void OdomEstimatorEKF::processLandmarkObservation(
     }
 
     auto result_odom = state2Msg();
-    triggerNotify(POINT_CLOUD_PROCESSED_EVENT, std::make_any<nav_msgs::msg::Odometry>(result_odom));
+    triggerNotify(LANDMARK_PROCESSED_EVENT, std::make_any<nav_msgs::msg::Odometry>(result_odom));
 
     is_doing_odom_estimation_.store(false);
 }
 
 void OdomEstimatorEKF::processWheel(const nav_msgs::msg::Odometry::SharedPtr odom) // with update
 {
-    if (!odom) {
+    if (!odom || !std::isfinite(odom->twist.twist.linear.x)) {
+        logger_->warn("[processWheel] Rejected non-finite wheel linear.x");
+        return;
+    }
+
+    const rclcpp::Time stamp(odom->header.stamp);
+    if (params_.reject_zero_timestamp && stamp.nanoseconds() == 0) {
+        logger_->warn("[processWheel] Rejected zero timestamp");
         return;
     }
 
     if (!is_init_) {
+        // Wheel pose/yaw is not a localization measurement. Initialize only an
+        // identity local frame when no explicit initial pose was provided.
         geometry_msgs::msg::PoseWithCovarianceStamped initial_pose;
         initial_pose.header = odom->header;
-        initial_pose.pose = odom->pose;
+        initial_pose.pose.pose.orientation.w = 1.0;
         findInitPose(initial_pose);
-        {
-            std::lock_guard<std::mutex> lock(state_mutex_);
-            current_state_.time = rclcpp::Time(odom->header.stamp);
-        }
     }
 
     {
         std::lock_guard<std::mutex> lock(measurement_mutex_);
-        latest_wheel_odom_ = odom;
+        if (last_received_wheel_stamp_ && stamp <= *last_received_wheel_stamp_) {
+            logger_->warn("[processWheel] Rejected non-monotonic timestamp");
+            return;
+        }
+        last_received_wheel_stamp_ = stamp;
         wheel_odom_queue_.push_back(odom);
         if (wheel_odom_queue_.size() > 2000) {
             wheel_odom_queue_.pop_front();
         }
-        has_new_wheel_ = true;
     }
 
     logger_->debug("[processWheel] Stored latest wheel odometry: v={:.3f} m/s", odom->twist.twist.linear.x);
@@ -313,21 +375,44 @@ void OdomEstimatorEKF::processWheel(const nav_msgs::msg::Odometry::SharedPtr odo
 
 void OdomEstimatorEKF::processImu(const sensor_msgs::msg::Imu::SharedPtr imu) // with update
 {
-    if (!imu) {
+    if (!imu || !std::isfinite(imu->angular_velocity.x) ||
+        !std::isfinite(imu->angular_velocity.y) ||
+        !std::isfinite(imu->angular_velocity.z)) {
+        logger_->warn("[processImu] Rejected non-finite base-frame angular velocity");
+        return;
+    }
+
+    if (imu->header.frame_id != params_.imu_target_frame) {
+        logger_->warn(
+            "[processImu] Rejected IMU in frame '{}'; expected transformed frame '{}'",
+            imu->header.frame_id, params_.imu_target_frame);
+        return;
+    }
+
+    const rclcpp::Time stamp(imu->header.stamp);
+    if (params_.reject_zero_timestamp && stamp.nanoseconds() == 0) {
+        logger_->warn("[processImu] Rejected zero timestamp");
         return;
     }
 
     {
         std::lock_guard<std::mutex> lock(measurement_mutex_);
-        latest_imu_ = imu;
+        if (last_received_imu_stamp_ && stamp <= *last_received_imu_stamp_) {
+            logger_->warn("[processImu] Rejected non-monotonic timestamp");
+            return;
+        }
+        last_received_imu_stamp_ = stamp;
         imu_queue_.push_back(imu);
         if (imu_queue_.size() > 10000) {
             imu_queue_.pop_front();
         }
-        has_new_imu_ = true;
     }
 
-    logger_->debug("[processImu] Stored latest IMU gyro: w={:.3f}°/s", imu->angular_velocity.z * 180.0 / M_PI);
+    logger_->debug(
+        "[processImu] Stored latest base gyro: p={:.3f}, q={:.3f}, r={:.3f}°/s",
+        imu->angular_velocity.x * 180.0 / M_PI,
+        imu->angular_velocity.y * 180.0 / M_PI,
+        imu->angular_velocity.z * 180.0 / M_PI);
 }
 
 bool OdomEstimatorEKF::prediction(const geometry_msgs::msg::Twist::SharedPtr cmd_vel, double dt)
@@ -344,34 +429,130 @@ bool OdomEstimatorEKF::prediction(const geometry_msgs::msg::Twist::SharedPtr cmd
         return true;
     }
 
-    const double ANGLE_THRESHOLD = 1e-4;
+    constexpr double kNumericalAngularRateThreshold = 1.0e-6;
 
-    // Extract velocities from Twist message
-    double v = cmd_vel->linear.x;
-    double w = cmd_vel->angular.z;
+    // Wheel speed is a body-X velocity. Angular velocity has already been
+    // transformed into base_link and must be integrated as the complete body
+    // rate [p, q, r], rather than treating r as Euler yaw rate.
+    const double v = cmd_vel->linear.x;
+    const double raw_p = cmd_vel->angular.x;
+    const double raw_q = cmd_vel->angular.y;
+    const double raw_r = cmd_vel->angular.z;
+    const double gyro_bias_x = current_state_.mu(9);
+    const double gyro_bias_y = current_state_.mu(10);
+    const double gyro_bias_z = current_state_.mu(5);
+    const double corrected_p = raw_p - gyro_bias_x;
+    const double corrected_q = raw_q - gyro_bias_y;
+    const double corrected_r = raw_r - gyro_bias_z;
+    const double theta = current_state_.mu(2);
+    const double roll = params_.enable_3d_estimation ? current_state_.mu(7) : 0.0;
+    const double pitch = params_.enable_3d_estimation ? current_state_.mu(8) : 0.0;
+    const Eigen::Vector3d corrected_body_rates(
+        corrected_p, corrected_q, corrected_r);
+    const std::array<double, 3> propagated_rpy = params_.enable_3d_estimation
+        ? propagateRpyWithBodyRates(
+            roll, pitch, theta, corrected_body_rates, dt)
+        : std::array<double, 3>{
+            0.0, 0.0, normalizeAngle(theta + corrected_r * dt)};
+    const double propagated_roll = propagated_rpy[0];
+    const double propagated_pitch = propagated_rpy[1];
+    const double propagated_yaw = propagated_rpy[2];
+    const double dtheta = normalizeAngle(propagated_yaw - theta);
+    const double yaw_rate = dtheta / dt;
+    const double cos_pitch = std::cos(pitch);
+    const double sin_pitch = std::sin(pitch);
+    const double horizontal_v = v * cos_pitch;
+    double dx = 0.0;
+    double dy = 0.0;
+    double dz = 0.0;
+    const int state_size = current_state_.mu.size();
 
-    double gyro_bias = current_state_.mu(5);
-    double corrected_w = w - gyro_bias;
-    double theta = current_state_.mu(2);
-    double dx, dy, dtheta;
+    const auto apply_attitude_jacobian = [&](Eigen::MatrixXd& jacobian) {
+        if (!params_.enable_3d_estimation) {
+            jacobian(2, 4) = dt;
+            jacobian(2, 5) = -dt;
+            return;
+        }
+
+        const double sin_roll = std::sin(roll);
+        const double cos_roll = std::cos(roll);
+        const double safe_cos_pitch = std::copysign(
+            std::max(std::fabs(cos_pitch), 1.0e-6), cos_pitch);
+        const double tan_pitch = sin_pitch / safe_cos_pitch;
+        const double sec_pitch_squared = 1.0 / (safe_cos_pitch * safe_cos_pitch);
+
+        jacobian(7, 7) = 1.0 +
+            (cos_roll * tan_pitch * corrected_q - sin_roll * tan_pitch * corrected_r) * dt;
+        jacobian(7, 8) =
+            (sin_roll * corrected_q + cos_roll * corrected_r) * sec_pitch_squared * dt;
+        jacobian(8, 7) =
+            (-sin_roll * corrected_q - cos_roll * corrected_r) * dt;
+        jacobian(8, 8) = 1.0;
+        jacobian(2, 7) =
+            (cos_roll * corrected_q - sin_roll * corrected_r) / safe_cos_pitch * dt;
+        jacobian(2, 8) = yaw_rate * tan_pitch * dt;
+
+        const Eigen::Matrix3d body_to_euler =
+            bodyRatesToEulerRatesMatrix(roll, pitch);
+        constexpr std::array<int, 3> attitude_indices{7, 8, 2};
+        constexpr std::array<int, 3> bias_indices{9, 10, 5};
+        for (int row = 0; row < 3; ++row) {
+            const int attitude_index =
+                attitude_indices[static_cast<std::size_t>(row)];
+            // Only raw body-z rate is retained as state 4.
+            jacobian(attitude_index, 4) = body_to_euler(row, 2) * dt;
+            for (int axis = 0; axis < 3; ++axis) {
+                jacobian(
+                    attitude_index,
+                    bias_indices[static_cast<std::size_t>(axis)]) =
+                    -body_to_euler(row, axis) * dt;
+            }
+        }
+    };
+
+    const auto add_attitude_process_noise = [&](Eigen::MatrixXd& process_noise) {
+        if (!params_.enable_3d_estimation) {
+            process_noise(2, 2) += params_.gyro_noise * dt * dt;
+            return;
+        }
+
+        const Eigen::Matrix3d body_to_euler =
+            bodyRatesToEulerRatesMatrix(roll, pitch);
+        const Eigen::Matrix3d attitude_noise =
+            body_to_euler *
+            (Eigen::Matrix3d::Identity() * params_.gyro_noise * dt * dt) *
+            body_to_euler.transpose();
+        constexpr std::array<int, 3> attitude_indices{7, 8, 2};
+        for (int row = 0; row < 3; ++row) {
+            for (int column = 0; column < 3; ++column) {
+                process_noise(
+                    attitude_indices[static_cast<std::size_t>(row)],
+                    attitude_indices[static_cast<std::size_t>(column)]) +=
+                    attitude_noise(row, column);
+            }
+        }
+        process_noise(7, 7) += params_.roll_pitch_process_noise * dt;
+        process_noise(8, 8) += params_.roll_pitch_process_noise * dt;
+    };
 
     // Determine if this is a spin turn (in-place rotation) or normal Ackermann drive
     // Spin turn: very low linear velocity but significant angular velocity
-    if (std::fabs(v) < 1e-3 && std::fabs(corrected_w) > ANGLE_THRESHOLD) {
+    if (std::fabs(v) < params_.wheel_stationary_threshold &&
+        std::fabs(yaw_rate) > kNumericalAngularRateThreshold) {
         // === Spin Turn Mode ===
         // Robot rotates in place around its center
         // Use angular velocity directly
-        dtheta = corrected_w * dt;
-
         // For spin turn, position change is minimal (rotating in place)
         dx = 0.0;
         dy = 0.0;
+        dz = 0.0;
 
-        logger_->debug("[prediction] Spin turn mode: raw_w={:.3f}°/s bias={:.3f}°/s corrected_w={:.3f}°/s dθ={:.4f}° dt={:.4f}",
-                       w * 180.0 / M_PI, gyro_bias * 180.0 / M_PI, corrected_w * 180.0 / M_PI, dtheta * 180.0 / M_PI, dt);
+        logger_->debug("[prediction] Spin turn mode: body_rates=[{:.3f}, {:.3f}, {:.3f}]°/s bias_z={:.3f}°/s yaw_rate={:.3f}°/s dθ={:.4f}° dt={:.4f}",
+                       raw_p * 180.0 / M_PI, raw_q * 180.0 / M_PI, raw_r * 180.0 / M_PI,
+                       gyro_bias_z * 180.0 / M_PI, yaw_rate * 180.0 / M_PI,
+                       dtheta * 180.0 / M_PI, dt);
 
         // Jacobians for spin turn
-        int state_size = current_state_.mu.size();
         Eigen::MatrixXd Gt = Eigen::MatrixXd::Identity(state_size, state_size);
         // For pure rotation, position doesn't change with theta
         Gt(0, 2) = 0.0;
@@ -381,20 +562,24 @@ bool OdomEstimatorEKF::prediction(const geometry_msgs::msg::Twist::SharedPtr cmd
         Gt(1, 3) = 0.0;  // ∂y/∂v = 0 (no translation)
         Gt(0, 4) = 0.0;  // ∂x/∂w = 0 (no translation)
         Gt(1, 4) = 0.0;  // ∂y/∂w = 0 (no translation)
-        // Orientation depends on angular velocity and gyro bias.
-        Gt(2, 4) = dt;   // ∂theta/∂w = dt (dtheta = w * dt)
-        Gt(2, 5) = -dt;  // ∂theta/∂bias = -dt
+        apply_attitude_jacobian(Gt);
         // Velocities remain as identity (v_new = v_old, w_new = w_old)
 
-        // Process noise for spin turn
-        // Q_process is velocity-dependent to model higher uncertainty at higher speeds
+        // Discrete process noise. Gyro white noise integrates into yaw with
+        // dt^2, while bias random walk grows with elapsed time.
         Eigen::MatrixXd Q_process = Eigen::MatrixXd::Zero(state_size, state_size);
-        Q_process(0, 0) = 0.001;  // x position uncertainty (minimal for spin turn)
-        Q_process(1, 1) = 0.001;  // y position uncertainty (minimal for spin turn)
-        Q_process(2, 2) = std::max(0.02 * std::fabs(corrected_w) * dt, 0.001);  // θ uncertainty proportional to angular velocity
-        Q_process(3, 3) = std::max(0.05 * std::fabs(v), 0.01*0.01);   // v uncertainty (minimal in spin turn)
-        Q_process(4, 4) = std::max(0.05 * std::fabs(w), 1.0 * M_PI/180.0 * 1.0 * M_PI/180.0);    // w uncertainty proportional to angular velocity
-        Q_process(5, 5) = std::pow(0.005 * M_PI / 180.0, 2);  // gyro bias random walk
+        const double position_variance = params_.wheel_velocity_noise * dt * dt;
+        Q_process(0, 0) = position_variance;
+        Q_process(1, 1) = position_variance;
+        Q_process(3, 3) = params_.wheel_velocity_noise * dt;
+        Q_process(4, 4) = params_.gyro_noise * dt;
+        Q_process(5, 5) = params_.gyro_bias_random_walk * dt;
+        if (params_.enable_3d_estimation) {
+            Q_process(9, 9) = params_.gyro_bias_random_walk * dt;
+            Q_process(10, 10) = params_.gyro_bias_random_walk * dt;
+            Q_process(6, 6) = params_.vertical_motion_noise * dt * dt;
+        }
+        add_attitude_process_noise(Q_process);
         // Landmarks don't have process noise
 
         // 공분산 예측
@@ -403,63 +588,101 @@ bool OdomEstimatorEKF::prediction(const geometry_msgs::msg::Twist::SharedPtr cmd
         // === Normal Ackermann Drive Mode ===
         // motion model
 
-        if (std::fabs(corrected_w) > ANGLE_THRESHOLD) {
+        if (std::fabs(yaw_rate) > kNumericalAngularRateThreshold) {
             // 회전 주행 (curved motion)
-            double R = v / corrected_w;  // Direct calculation, safer than using tan(delta)
-            dtheta = corrected_w * dt;
+            const double R = horizontal_v / yaw_rate;
             dx = R * (sin(theta + dtheta) - sin(theta));
             dy = -R * (cos(theta + dtheta) - cos(theta));
         } else {
             // 직선 주행 (straight line motion)
-            dtheta = 0.0;
-            dx = v * cos(theta) * dt;
-            dy = v * sin(theta) * dt;
+            dx = horizontal_v * cos(theta) * dt;
+            dy = horizontal_v * sin(theta) * dt;
+        }
+        // REP-103 positive pitch rotates body +X toward world -Z. Therefore a
+        // nose-up slope has negative pitch and produces positive dz.
+        if (params_.enable_3d_estimation) {
+            dz = projectForwardVelocity(v, pitch, theta).z() * dt;
         }
 
-        logger_->debug("[prediction] Ackermann mode: v={:.3f} raw_w={:.3f} bias={:.3f} corrected_w={:.3f} dθ={:.4f} dt={:.4f}",
-                       v, w, gyro_bias, corrected_w, dtheta, dt);
+        logger_->debug("[prediction] Ackermann mode: v={:.3f} body_rates=[{:.3f}, {:.3f}, {:.3f}]°/s bias_z={:.3f}°/s yaw_rate={:.3f}°/s dθ={:.4f}° dt={:.4f}",
+                       v, raw_p * 180.0 / M_PI, raw_q * 180.0 / M_PI,
+                       raw_r * 180.0 / M_PI, gyro_bias_z * 180.0 / M_PI,
+                       yaw_rate * 180.0 / M_PI, dtheta * 180.0 / M_PI, dt);
 
         // Jacobians for Ackermann steering - must match state size for SLAM mode
-        int state_size = current_state_.mu.size();
         Eigen::MatrixXd Gt = Eigen::MatrixXd::Identity(state_size, state_size);
 
         // Position derivatives w.r.t. theta
-        Gt(0, 2) = -v * dt * sin(theta);
-        Gt(1, 2) =  v * dt * cos(theta);
+        Gt(0, 2) = -horizontal_v * dt * sin(theta);
+        Gt(1, 2) =  horizontal_v * dt * cos(theta);
 
         // Position derivatives w.r.t. v (linear velocity)
-        Gt(0, 3) = dt * cos(theta);
-        Gt(1, 3) = dt * sin(theta);
+        Gt(0, 3) = cos_pitch * dt * cos(theta);
+        Gt(1, 3) = cos_pitch * dt * sin(theta);
+        if (params_.enable_3d_estimation) {
+            Gt(6, 3) = -sin_pitch * dt;
+            Gt(6, 8) = -v * cos_pitch * dt;
+        }
 
         // Position and orientation derivatives w.r.t. w (angular velocity)
-        if (std::fabs(corrected_w) > ANGLE_THRESHOLD) {
+        if (std::fabs(yaw_rate) > kNumericalAngularRateThreshold) {
             // Curved motion
-            double R = v / corrected_w;
-            Gt(0, 4) = dt * R * cos(theta + corrected_w * dt) - (v / (corrected_w * corrected_w)) * (sin(theta + corrected_w * dt) - sin(theta));
-            Gt(1, 4) = dt * R * sin(theta + corrected_w * dt) + (v / (corrected_w * corrected_w)) * (cos(theta + corrected_w * dt) - cos(theta));
-            Gt(2, 4) = dt;
+            const double R = horizontal_v / yaw_rate;
+            const double dx_d_yaw_rate =
+                dt * R * cos(theta + dtheta) -
+                (horizontal_v / (yaw_rate * yaw_rate)) *
+                (sin(theta + dtheta) - sin(theta));
+            const double dy_d_yaw_rate =
+                dt * R * sin(theta + dtheta) +
+                (horizontal_v / (yaw_rate * yaw_rate)) *
+                (cos(theta + dtheta) - cos(theta));
+            const double yaw_rate_from_raw_r =
+                bodyRatesToEulerRatesMatrix(roll, pitch)(2, 2);
+            Gt(0, 4) = dx_d_yaw_rate * yaw_rate_from_raw_r;
+            Gt(1, 4) = dy_d_yaw_rate * yaw_rate_from_raw_r;
             Gt(0, 5) = -Gt(0, 4);
             Gt(1, 5) = -Gt(1, 4);
-            Gt(2, 5) = -dt;
         } else {
             // Straight motion
             Gt(0, 4) = 0.0;
             Gt(1, 4) = 0.0;
-            Gt(2, 4) = dt;
             Gt(0, 5) = 0.0;
             Gt(1, 5) = 0.0;
-            Gt(2, 5) = -dt;
+        }
+        apply_attitude_jacobian(Gt);
+        if (params_.enable_3d_estimation && std::fabs(cos_pitch) > 1.0e-6) {
+            Gt(0, 8) = -dx * std::tan(pitch);
+            Gt(1, 8) = -dy * std::tan(pitch);
         }
 
-        // Process noise for Ackermann motion
-        // Q_process is velocity-dependent to model higher uncertainty at higher speeds
+        // Forward wheel noise and soft lateral-slip uncertainty are rotated
+        // from the body frame into odom. This keeps vy=0 as the model mean,
+        // without pretending lateral motion is impossible.
         Eigen::MatrixXd Q_process = Eigen::MatrixXd::Zero(state_size, state_size);
-        Q_process(0, 0) = std::max(0.01 * std::fabs(v) * dt, 0.001);  // x uncertainty proportional to velocity
-        Q_process(1, 1) = std::max(0.01 * std::fabs(v) * dt, 0.001);  // y uncertainty proportional to velocity
-        Q_process(2, 2) = std::max(0.02 * std::fabs(corrected_w) * dt, 0.001);  // θ uncertainty proportional to angular velocity
-        Q_process(3, 3) = std::max(0.01 * std::fabs(v), 0.001);       // v uncertainty proportional to velocity
-        Q_process(4, 4) = std::max(0.05 * std::fabs(w), 0.01);        // w uncertainty proportional to angular velocity
-        Q_process(5, 5) = std::pow(0.005 * M_PI / 180.0, 2);          // gyro bias random walk
+        const double forward_variance = params_.wheel_velocity_noise * dt * dt;
+        const double lateral_variance = params_.vy_zero_constraint_enabled
+            ? params_.vy_zero_constraint_noise * dt * dt
+            : params_.vy_zero_constraint_noise * dt;
+        const double cos_theta = std::cos(theta);
+        const double sin_theta = std::sin(theta);
+        Q_process(0, 0) =
+            cos_theta * cos_theta * forward_variance +
+            sin_theta * sin_theta * lateral_variance;
+        Q_process(1, 1) =
+            sin_theta * sin_theta * forward_variance +
+            cos_theta * cos_theta * lateral_variance;
+        Q_process(0, 1) =
+            sin_theta * cos_theta * (forward_variance - lateral_variance);
+        Q_process(1, 0) = Q_process(0, 1);
+        Q_process(3, 3) = params_.wheel_velocity_noise * dt;
+        Q_process(4, 4) = params_.gyro_noise * dt;
+        Q_process(5, 5) = params_.gyro_bias_random_walk * dt;
+        if (params_.enable_3d_estimation) {
+            Q_process(9, 9) = params_.gyro_bias_random_walk * dt;
+            Q_process(10, 10) = params_.gyro_bias_random_walk * dt;
+            Q_process(6, 6) = params_.vertical_motion_noise * dt * dt;
+        }
+        add_attitude_process_noise(Q_process);
         // Landmarks don't have process noise
 
         // 공분산 예측
@@ -469,20 +692,31 @@ bool OdomEstimatorEKF::prediction(const geometry_msgs::msg::Twist::SharedPtr cmd
     // 상태 예측 (공통)
     current_state_.mu(0) += dx;
     current_state_.mu(1) += dy;
-    current_state_.mu(2) += dtheta;
+    current_state_.mu(6) = params_.enable_3d_estimation
+        ? current_state_.mu(6) + dz : 0.0;
+    current_state_.mu(2) = propagated_yaw;
+    current_state_.mu(7) = params_.enable_3d_estimation ? propagated_roll : 0.0;
+    current_state_.mu(8) = params_.enable_3d_estimation ? propagated_pitch : 0.0;
     current_state_.mu(3) = v;   // Update velocity
-    current_state_.mu(4) = w;   // Raw angular velocity state; prediction uses w - gyro_bias.
+    current_state_.mu(4) = raw_r;  // Raw body-z rate; prediction removes z-bias.
 
-    logger_->debug("[prediction] Predicted state: x={:.3f}, y={:.3f}, yaw={:.3f}°, v={:.3f}, raw_w={:.3f}°/s, bias={:.3f}°/s",
+    logger_->debug("[prediction] Predicted state: x={:.3f}, y={:.3f}, z={:.3f}, "
+                  "roll={:.2f}°, pitch={:.2f}°, yaw={:.3f}°, v={:.3f}, "
+                  "raw_w={:.3f}°/s, bias={:.3f}°/s",
                   current_state_.mu(0),
                   current_state_.mu(1),
+                  current_state_.mu(6),
+                  current_state_.mu(7) * 180.0 / M_PI,
+                  current_state_.mu(8) * 180.0 / M_PI,
                   current_state_.mu(2) * 180.0 / M_PI,
                   current_state_.mu(3),
                   current_state_.mu(4) * 180.0 / M_PI,
                   current_state_.mu(5) * 180.0 / M_PI);
 
-    // Normalize yaw
-    current_state_.mu(2) = atan2(sin(current_state_.mu(2)), cos(current_state_.mu(2)));
+    current_state_.mu(2) = normalizeAngle(current_state_.mu(2));
+    current_state_.mu(7) = normalizeAngle(current_state_.mu(7));
+    current_state_.mu(8) = std::clamp(
+        current_state_.mu(8), -M_PI_2 + 1.0e-6, M_PI_2 - 1.0e-6);
 
     return true;
 }
@@ -497,7 +731,7 @@ bool OdomEstimatorEKF::correctionLandmarkObservation(const geometry_msgs::msg::P
     }
 
     int state_size = current_state_.mu.size();
-    int robot_state_size = State::getRobotStateSize();  // x, y, yaw, v, w, gyro_bias
+    int robot_state_size = State::getRobotStateSize();
 
     // Extract landmark measurement from pose message (in base_link frame)
     Eigen::Quaterniond q_meas(
@@ -628,6 +862,12 @@ bool OdomEstimatorEKF::correctionLandmarkObservation(const geometry_msgs::msg::P
         K = current_state_.sigma * H.transpose() * S.inverse();
     }
 
+    // V-marker observation is explicitly planar (x, y, yaw). It must not
+    // directly pull relative height or gravity-referenced roll/pitch.
+    K.row(6).setZero();
+    K.row(7).setZero();
+    K.row(8).setZero();
+
     // Innovation (measurement residual): z_t - h(μ̄_t)
     Eigen::VectorXd innovation = z - h_mu;
 
@@ -747,41 +987,130 @@ bool OdomEstimatorEKF::correctionImu(const sensor_msgs::msg::Imu::SharedPtr imu)
 {
     std::lock_guard<std::mutex> lock(state_mutex_);
 
-    // Extract angular velocity measurement from IMU
-    double measured_w = imu->angular_velocity.z;
+    const auto update_single_state = [this](
+        int state_index,
+        double innovation,
+        double measurement_variance) {
+        const int state_size = current_state_.mu.size();
+        const double innovation_variance =
+            current_state_.sigma(state_index, state_index) + measurement_variance;
+        Eigen::MatrixXd observation = Eigen::MatrixXd::Zero(1, state_size);
+        observation(0, state_index) = 1.0;
+        Eigen::VectorXd gain = Eigen::VectorXd::Zero(state_size);
+        gain(state_index) =
+            current_state_.sigma(state_index, state_index) / innovation_variance;
+        current_state_.mu += gain * innovation;
+        const Eigen::MatrixXd identity =
+            Eigen::MatrixXd::Identity(state_size, state_size);
+        const Eigen::MatrixXd residual_transform = identity - gain * observation;
+        current_state_.sigma =
+            residual_transform * current_state_.sigma * residual_transform.transpose() +
+            gain * measurement_variance * gain.transpose();
+    };
 
-    // Keep mu(4) as the latest raw gyro measurement. The bias state is not
-    // independently observable while the robot is moving, so do not run a
-    // w+bias Kalman correction here. Prediction uses (raw_w - bias).
-    current_state_.mu(4) = measured_w;
-    current_state_.sigma(4, 4) = std::pow(0.5 * M_PI / 180.0, 2);
+    const Eigen::Vector3d measured_rates(
+        imu->angular_velocity.x,
+        imu->angular_velocity.y,
+        imu->angular_velocity.z);
+    const std::array<double, 3> measurement_variances{
+        covarianceOrFallback(
+            imu->angular_velocity_covariance[0],
+            params_.use_imu_message_covariance,
+            params_.gyro_noise,
+            params_.gyro_min_variance),
+        covarianceOrFallback(
+            imu->angular_velocity_covariance[4],
+            params_.use_imu_message_covariance,
+            params_.gyro_noise,
+            params_.gyro_min_variance),
+        covarianceOrFallback(
+            imu->angular_velocity_covariance[8],
+            params_.use_imu_message_covariance,
+            params_.gyro_noise,
+            params_.gyro_min_variance)};
+    const double measured_w = measured_rates.z();
 
-    // Stationary bias update: if wheel velocity says the robot is stopped and
-    // gyro rate is small, treat the measured gyro rate as bias and adapt slowly.
-    const double stationary_v_threshold = 0.005;                 // m/s
-    const double stationary_w_threshold = 0.2 * M_PI / 180.0;    // rad/s
-    if (std::fabs(current_state_.mu(3)) < stationary_v_threshold &&
-        std::fabs(measured_w) < stationary_w_threshold)
-    {
-        const double alpha = 0.001;
-        const double previous_bias = current_state_.mu(5);
-        current_state_.mu(5) = (1.0 - alpha) * current_state_.mu(5) + alpha * measured_w;
-        current_state_.sigma(5, 5) = std::min(
-            current_state_.sigma(5, 5),
-            std::pow(0.2 * M_PI / 180.0, 2));
+    if (!last_accepted_gyro_z_) {
+        current_state_.mu(4) = measured_w;
+        current_state_.sigma(4, 4) = measurement_variances[2];
+    } else {
+        const double innovation = measured_w - current_state_.mu(4);
+        update_single_state(4, innovation, measurement_variances[2]);
+    }
+    last_accepted_gyro_z_ = measured_w;
 
-        logger_->debug("[correctionImu] Stationary gyro bias update: measured={:.4f}°/s, bias={:.4f}°/s, dbias={:.4f}°/s",
-                      measured_w * 180.0 / M_PI,
-                      current_state_.mu(5) * 180.0 / M_PI,
-                      (current_state_.mu(5) - previous_bias) * 180.0 / M_PI);
+    // sensor_msgs/Imu.orientation is intentionally ignored on every axis.
+    // Attitude comes only from the joint body-rate quaternion propagation.
+    const double gyro_magnitude = measured_rates.norm();
+    const bool stationary =
+        has_wheel_measurement_ &&
+        latest_wheel_angular_z_ &&
+        std::fabs(current_state_.mu(3)) < params_.wheel_stationary_threshold &&
+        std::fabs(*latest_wheel_angular_z_) <
+            params_.wheel_stationary_angular_threshold &&
+        gyro_magnitude < params_.gyro_stationary_threshold;
+
+    if (!stationary) {
+        stationary_start_time_.reset();
+        stationary_gyro_sum_.setZero();
+        stationary_gyro_samples_ = 0;
+    } else {
+        const rclcpp::Time stamp(imu->header.stamp);
+        if (!stationary_start_time_) {
+            stationary_start_time_ = stamp;
+        }
+        stationary_gyro_sum_ += measured_rates;
+        ++stationary_gyro_samples_;
+        const double stationary_duration =
+            (stamp - *stationary_start_time_).seconds();
+
+        if (!gyro_bias_initialized_ && params_.gyro_initial_bias_enabled &&
+            stationary_duration >= params_.gyro_initial_bias_duration &&
+            stationary_gyro_samples_ >=
+                static_cast<std::size_t>(params_.gyro_initial_bias_min_samples)) {
+            const Eigen::Vector3d calibrated_bias =
+                stationary_gyro_sum_ /
+                static_cast<double>(stationary_gyro_samples_);
+            constexpr std::array<int, 3> bias_indices{9, 10, 5};
+            for (int axis = 0; axis < 3; ++axis) {
+                const int bias_index =
+                    bias_indices[static_cast<std::size_t>(axis)];
+                current_state_.mu(bias_index) = calibrated_bias(axis);
+                const double calibrated_variance = std::max(
+                    params_.gyro_min_variance,
+                    measurement_variances[static_cast<std::size_t>(axis)] /
+                        static_cast<double>(stationary_gyro_samples_));
+                current_state_.sigma.row(bias_index).setZero();
+                current_state_.sigma.col(bias_index).setZero();
+                current_state_.sigma(bias_index, bias_index) =
+                    calibrated_variance;
+            }
+            gyro_bias_initialized_ = true;
+            logger_->info(
+                "Initial stationary gyro bias calibrated: [{:.8f}, {:.8f}, {:.8f}] rad/s from {} samples",
+                current_state_.mu(9), current_state_.mu(10), current_state_.mu(5),
+                stationary_gyro_samples_);
+        } else if (gyro_bias_initialized_ &&
+                   stationary_duration >= params_.gyro_initial_bias_duration) {
+            // Zero-angular-rate update: gyro_xyz = bias_xyz + noise.
+            constexpr std::array<int, 3> bias_indices{9, 10, 5};
+            for (int axis = 0; axis < 3; ++axis) {
+                const int bias_index =
+                    bias_indices[static_cast<std::size_t>(axis)];
+                update_single_state(
+                    bias_index,
+                    measured_rates(axis) - current_state_.mu(bias_index),
+                    params_.stationary_gyro_bias_variance);
+            }
+        }
     }
 
-    logger_->debug("[correctionImu] IMU gyro stored: v={:.3f}m/s, raw_w={:.3f}°/s, bias={:.3f}°/s, corrected_w={:.3f}°/s (yaw unchanged: {:.3f}°)",
-                  current_state_.mu(3),
-                  current_state_.mu(4) * 180.0 / M_PI,
-                  current_state_.mu(5) * 180.0 / M_PI,
-                  (current_state_.mu(4) - current_state_.mu(5)) * 180.0 / M_PI,
-                  current_state_.mu(2) * 180.0 / M_PI);
+    logger_->debug(
+        "[correctionImu] base gyro=[{:.5f}, {:.5f}, {:.5f}], bias=[{:.5f}, {:.5f}, {:.5f}] rad/s, roll={:.2f} deg, pitch={:.2f} deg",
+        measured_rates.x(), measured_rates.y(), measured_rates.z(),
+        current_state_.mu(9), current_state_.mu(10), current_state_.mu(5),
+        current_state_.mu(7) * 180.0 / M_PI,
+        current_state_.mu(8) * 180.0 / M_PI);
 
     return true;
 }
@@ -811,16 +1140,27 @@ bool OdomEstimatorEKF::correctionWheel(const nav_msgs::msg::Odometry::SharedPtr 
     // Measurement covariance: only v variance
     // Use appropriate variance for wheel odometry velocity measurement
     Eigen::MatrixXd R_subset(1, 1);
-    R_subset(0, 0) = 0.04 * 0.04;  // wheel v variance from bag moving residuals
-
-    // Ensure minimum variance for numerical stability
-    if (R_subset(0, 0) < 1e-9) {
-        logger_->warn("[correctionWheel] v measurement covariance too small ({:.6e}), using minimum: 1e-9", R_subset(0, 0));
-        R_subset(0, 0) = 1e-9;
-    }
+    R_subset(0, 0) = covarianceOrFallback(
+        odom->twist.covariance[0],
+        params_.use_wheel_message_covariance,
+        params_.wheel_velocity_noise,
+        params_.wheel_min_velocity_variance);
 
     logger_->debug("[correctionWheel] Measured v: {:.3f} m/s, Predicted v: {:.3f} m/s, Variance: {:.6e} (std: {:.3f} m/s)",
                   measured_v, h_mu(0), R_subset(0, 0), std::sqrt(R_subset(0, 0)));
+
+    if (!last_accepted_wheel_v_) {
+        current_state_.mu(3) = measured_v;
+        current_state_.sigma(3, 3) = R_subset(0, 0);
+        last_accepted_wheel_v_ = measured_v;
+        if (std::isfinite(odom->twist.twist.angular.z)) {
+            latest_wheel_angular_z_ = odom->twist.twist.angular.z;
+        } else {
+            latest_wheel_angular_z_.reset();
+        }
+        has_wheel_measurement_ = true;
+        return true;
+    }
 
     // (1) Compute Kalman gain: K = (PH') / (HPH' + R)
     // Innovation covariance S = H * Σ̄ * H^T + R
@@ -836,6 +1176,11 @@ bool OdomEstimatorEKF::correctionWheel(const nav_msgs::msg::Odometry::SharedPtr 
     K(2) = 0.0;
     K(4) = 0.0;
     K(5) = 0.0;
+    K(6) = 0.0;
+    K(7) = 0.0;
+    K(8) = 0.0;
+    K(9) = 0.0;
+    K(10) = 0.0;
 
     // Innovation (measurement residual): z_t - h(μ̄_t)
     Eigen::VectorXd innovation = z - h_mu;  // 1x1
@@ -860,6 +1205,13 @@ bool OdomEstimatorEKF::correctionWheel(const nav_msgs::msg::Odometry::SharedPtr 
     Eigen::MatrixXd I = Eigen::MatrixXd::Identity(state_size, state_size);
     Eigen::MatrixXd I_KH = I - K * H;
     current_state_.sigma = I_KH * current_state_.sigma * I_KH.transpose() + K * R_subset * K.transpose();
+    last_accepted_wheel_v_ = measured_v;
+    if (std::isfinite(odom->twist.twist.angular.z)) {
+        latest_wheel_angular_z_ = odom->twist.twist.angular.z;
+    } else {
+        latest_wheel_angular_z_.reset();
+    }
+    has_wheel_measurement_ = true;
 
     logger_->debug("[correctionWheel] Odometry correction applied: v innovation={:.3f}m/s, corrected state=[x={:.3f}m, y={:.3f}m, theta={:.3f}°, v={:.3f}m/s, w={:.3f}°/s]",
                   innovation(0),
@@ -931,7 +1283,7 @@ void OdomEstimatorEKF::disableLandmarkCorrection()
 
 bool OdomEstimatorEKF::isLandmarkInitialized() const
 {
-    // Check if in SLAM mode
+    // Landmark state is only meaningful while landmark correction is enabled.
     if (!is_landmark_correction_enabled_.load()) {
         return false;
     }

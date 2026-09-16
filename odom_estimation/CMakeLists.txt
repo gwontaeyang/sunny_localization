@@ -16,19 +16,14 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(std_srvs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
-find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
-find_package(tf2_geometry_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
-find_package(message_filters REQUIRED)
 find_package(gole_utility REQUIRED)
 find_package(gole_interfaces REQUIRED)
-find_package(pcl_conversions REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
 # Find all cpp files in src directory
@@ -46,25 +41,19 @@ ament_target_dependencies(${PROJECT_NAME}_node
   rclcpp
   rclcpp_lifecycle
   std_msgs
-  std_srvs
   geometry_msgs
   nav_msgs
   sensor_msgs
-  tf2
   tf2_ros
-  tf2_geometry_msgs
   visualization_msgs
   ament_index_cpp
-  message_filters
   gole_utility
   gole_interfaces
-  pcl_conversions
 )
 
 target_link_libraries(${PROJECT_NAME}_node
   gole_utility::gole_logger
   gole_utility::gole_diagnostic
-  gole_utility::gole_kinematics
   yaml-cpp
 )
 
@@ -78,6 +67,16 @@ if(BUILD_TESTING)
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   )
   target_link_libraries(test_imu_bias_config yaml-cpp)
+
+  ament_add_gtest(test_imu_transform
+    test/test_imu_transform.cpp
+  )
+  target_include_directories(test_imu_transform PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+  ament_target_dependencies(test_imu_transform
+    geometry_msgs
+  )
 endif()
 
 # Install executables

@@ -1,5 +1,33 @@
 # odom_estimation
 
+`enable_3d_estimation`으로 동작 차원을 선택한다.
+
+- `false`: 평면 모드. `x/y/yaw`만 추정하고 `z/roll/pitch`는 0으로 고정한다.
+- `true`: 3D 모드. 3축 gyro로 roll/pitch/yaw를 함께 전파하고 wheel 전진
+  속도를 경사 방향으로 투영해 상대 z를 적분한다.
+
+기본 설정 파일은 현재 동작을 유지하도록 `true`로 지정되어 있다. 이 값은 노드
+시작 시 읽으며 실행 도중에는 변경되지 않는다.
+
+Wheel odometry의 `twist.twist.linear.x`와 IMU 3축 gyro를 사용하는 custom EKF다.
+IMU `angular_velocity[x,y,z]`와 covariance는 `/imu/data.header.frame_id`에서
+`base_link`로 TF 회전한 뒤 3축 모두 roll/pitch/yaw propagation에 사용한다. 자세는
+body-frame 각속도를 quaternion으로 적분하므로 경사 상태에서 각 축의 결합도
+반영한다. gyro x/y/z bias를 상태로 추정해 적분 전에 모두 제거한다. IMU
+orientation 전체와 wheel pose/yaw/angular.z는 fusion하지 않는다. 단, wheel
+angular.z는 제자리 회전을 gyro bias로 오인하지 않도록 정지 판정 veto로만
+사용한다.
+
+경사면에서는 wheel 전진 속도를 roll/pitch/yaw 자세의 body X축 방향으로
+투영한다. 따라서 `x/y`는 수평 성분을, `z`는 `-v*sin(pitch)`를 적분한다.
+`z`는 별도 고도 센서로 보정되지 않는 상대 높이이므로 장거리 누적 오차가 남는다.
+
+EKF state timestamp는 sensor timestamp로만 갱신하며 TF wall timer와
+분리한다. gyro/wheel covariance fallback, gyro bias random walk, 초기 및
+운행 중 정지 bias 보정을 지원한다. 정상적인 급가감속과 급회전을 제한하지 않도록
+속도/각속도 크기, jump, Mahalanobis gate는 적용하지 않는다. 관련 기본값은
+`config/odom_estimation_params.yaml`에서 조정한다.
+
 Wheel Odometry + IMU를 EKF로 융합하여 로봇 pose를 추정하는 Lifecycle Node 패키지.  
 V-마커 검출 시 EKF-SLAM 모드로 전환하여 랜드마크 기반 위치 보정을 수행한다.
 
@@ -43,27 +71,20 @@ OdomEstimation (LifecycleNode)        ← ROS 통신 창구
 이는 **추후 로컬라이제이션 알고리즘을 조건에 따라 교체**할 수 있도록 일부러 설계한 구조이다.
 
 ```cpp
-// odom_estimator_types.hpp 에 정의된 지원 예정 타입들
+// 현재 구현되어 있는 타입
 enum class OdomEstimatorType {
-    EKF,       // 현재 유일하게 구현됨
-    AMCL,      // 예정 (AMCL — Monte Carlo)
-    PARTICLE,  // 예정 (Particle Filter)
-    UKF,       // 예정 (Unscented Kalman Filter)
-    SLAM       // 예정 (Pure SLAM)
+    EKF
 };
 ```
 
 ```cpp
 // odom_estimator_factory.cpp — 추가 구현은 아래에 case를 추가하면 됨
-if (odom_estimator_type == "EKF") {
+if (odom_estimator_type == "EKF")
     return std::make_unique<OdomEstimatorEKF>(...);
-// } else if (odom_estimator_type == "AMCL") {
-//     return std::make_unique<AmclOdomEstimator>(...);
-}
 ```
 
 새 알고리즘 추가 방법:
-1. `OdomEstimatorBase`를 상속하는 새 클래스 구현 (`processWheel`, `processImu`, `processPointCloud`, `prediction`, `correctionXxx` 구현)
+1. `OdomEstimatorBase`를 상속하는 새 클래스 구현 (`processWheel`, `processImu`, `prediction`, `correctionXxx` 구현)
 2. Factory의 `if-else` 에 새 타입 추가
 3. YAML 파라미터 `odom_estimator_type` 변경
 
@@ -73,12 +94,12 @@ if (odom_estimator_type == "EKF") {
 
 `odom_estimator_type: "EKF"` (설정 파일 기본값)
 
-### 상태 벡터 (8차원)
+### 상태 벡터 (14차원)
 
 ```
-μ = [ x,  y,  yaw,  v,  w,  lm_x,  lm_y,  lm_yaw ]
-      ─────────────────────  ─────────────────────
-        로봇 상태 (5)           랜드마크 상태 (3)
+μ = [ x, y, yaw, v, w, bias_z, z, roll, pitch, bias_x, bias_y, lm_x, lm_y, lm_yaw ]
+     ────────────────────────────────────────────────────────────────  ───────────────────
+                            로봇 상태 (11)                              랜드마크 상태 (3)
 ```
 
 | 인덱스 | 변수 | 설명 |
@@ -88,11 +109,17 @@ if (odom_estimator_type == "EKF") {
 | 2 | `yaw` | odom 프레임에서의 로봇 yaw [rad] |
 | 3 | `v` | 선속도 [m/s] |
 | 4 | `w` | 각속도 [rad/s] |
-| 5 | `lm_x` | V-마커 랜드마크 x 위치 (odom) [m] |
-| 6 | `lm_y` | V-마커 랜드마크 y 위치 (odom) [m] |
-| 7 | `lm_yaw` | V-마커 랜드마크 yaw (odom) [rad] |
+| 5 | `gyro_bias_z` | gyro z축 영점 오차 [rad/s] |
+| 6 | `z` | 초기점 기준 상대 높이 [m] |
+| 7 | `roll` | 차체 roll [rad] |
+| 8 | `pitch` | 차체 pitch [rad] |
+| 9 | `gyro_bias_x` | gyro x축 영점 오차 [rad/s] |
+| 10 | `gyro_bias_y` | gyro y축 영점 오차 [rad/s] |
+| 11 | `lm_x` | V-마커 랜드마크 x 위치 (odom) [m] |
+| 12 | `lm_y` | V-마커 랜드마크 y 위치 (odom) [m] |
+| 13 | `lm_yaw` | V-마커 랜드마크 yaw (odom) [rad] |
 
-> 랜드마크 상태(5~7)는 일반 주행 중에도 항상 상태 벡터에 포함되어 있다.  
+> 랜드마크 상태(11~13)는 일반 주행 중에도 항상 상태 벡터에 포함되어 있다.
 > SLAM 모드가 아닐 때는 랜드마크 공분산이 크게 유지되어 EKF에 영향을 주지 않는다.
 
 ---
@@ -104,8 +131,8 @@ if (odom_estimator_type == "EKF") {
 | 센서 | 토픽 | 관측 대상 |
 |---|---|---|
 | Wheel Odometry | `/motor_driver_node/odom` | 선속도 `v` |
-| IMU | `/imu/data` | 각속도 `w` |
-| LiDAR PointCloud | `/scan` | V-마커 위치 `[lm_x, lm_y, lm_yaw]` (SLAM 모드만) |
+| IMU | `/imu/data` | body 각속도 `p/q/r`, 3축 gyro bias |
+| Landmark pose | `~/landmark_observation` | V-마커 상대 pose `[lm_x, lm_y, lm_yaw]` |
 
 ### EKF의 Prediction + Correction 구조
 
@@ -115,17 +142,17 @@ if (odom_estimator_type == "EKF") {
 센서 토픽 도착
     │
     ▼
-[Prediction 단계]  ← 이전 상태의 v, w 를 운동 모델에 적용
+[Prediction 단계]  ← 이전 상태의 v와 변환된 gyro p/q/r을 운동 모델에 적용
     │
     ├── 일반 주행 (Ackermann)
     │     x' = x + R(sin(θ+Δθ) - sin(θ))
     │     y' = y - R(cos(θ+Δθ) - cos(θ))
-    │     θ' = θ + w·dt
+    │     자세' = 자세 quaternion × Exp([p-bx,q-by,r-bz]·dt)
     │
     └── 제자리 회전 (Spin Turn, |v| ≈ 0)
           x' = x  (이동 없음)
           y' = y  (이동 없음)
-          θ' = θ + w·dt
+          자세' = 자세 quaternion × Exp([p-bx,q-by,r-bz]·dt)
     
     ↓ (Jacobian Gt, 공분산 Σ 예측 포함)
     
@@ -137,7 +164,7 @@ if (odom_estimator_type == "EKF") {
 ```
 관측값:  z = [v_measured]          ← 바퀴 인코더에서 선속도만 추출
 예측값:  h(μ) = [μ_v]
-Jacobian H : (1×8), H(0,3) = 1.0  ← v 상태만 직접 관측
+Jacobian H : (1×14), H(0,3) = 1.0  ← v 상태만 직접 관측
 
 → Kalman gain을 통해 [x, y, θ, v, w] 모두 공분산 상관관계로 업데이트
 ```
@@ -145,14 +172,15 @@ Jacobian H : (1×8), H(0,3) = 1.0  ← v 상태만 직접 관측
 #### IMU Correction
 
 ```
-관측값:  z = [w_measured]          ← 자이로에서 각속도만 추출
+관측값:  z = [r_measured]          ← base_link 자이로 z축
 예측값:  h(μ) = [μ_w]
-Jacobian H : (1×8), H(0,4) = 1.0  ← w 상태만 직접 관측
+Jacobian H : (1×14), H(0,4) = 1.0  ← w 상태만 직접 관측
 
 → K[0], K[1], K[2] (x, y, yaw gain) 는 강제로 0으로 설정
   (이유: yaw는 prediction에서 w·dt 으로 적분되므로 correction에서
          직접 보정하면 cross-covariance 누적으로 yaw 발산 위험)
-→ 실질적으로 v, w 속도 상태만 업데이트
+→ r은 w 상태를 보정하고, 정지 구간에서는 p/q/r로 3축 bias를 함께 보정
+→ IMU orientation은 어떤 축에도 사용하지 않음
 ```
 
 #### V-마커 Correction (SLAM 모드만)
@@ -177,9 +205,8 @@ Jacobian H : (3×8), 로봇 pose와 랜드마크 pose에 모두 의존
         prediction(v_state, w_state, dt)
         correctionImu(w_measured)    → w_state 보정 (pose gain 강제 0)
                   ↓
-        [SLAM 모드일 때] PointCloud 도착
-        prediction(v_state, w_state, dt)
-        correctionVMarker(vmarker_pose) → 로봇 pose + 랜드마크 보정
+        [랜드마크 보정 모드] landmark pose 도착
+        correctionLandmarkObservation(pose) → 로봇 pose + 랜드마크 보정
 ```
 
 > 모든 Prediction에서 "현재 상태의 v, w" 를 제어 입력으로 사용한다.  
@@ -273,14 +300,13 @@ using_vmarker_localization_ = true
 |---|---|---|---|
 | subscribe | `/motor_driver_node/odom` | `nav_msgs/Odometry` | 바퀴 오도메트리 |
 | subscribe | `/imu/data` | `sensor_msgs/Imu` | IMU 각속도 |
-| subscribe | `/scan` | `sensor_msgs/PointCloud2` | LiDAR 포인트클라우드 (SLAM 모드만) |
+| subscribe | `~/landmark_observation` | `PoseWithCovarianceStamped` | V-마커 상대 pose 관측 |
 | subscribe | `~/set_pose` | `PoseWithCovarianceStamped` | localization 위치 변경 명령 |
-| subscribe | `task_manager_node/is_forward` | `std_msgs/Bool` | 전진/후진 방향 |
 | subscribe | `task_manager_node/using_vmarker_localization` | `std_msgs/Bool` | V-마커 SLAM 활성화 |
 | publish | `/odom` | `nav_msgs/Odometry` | 추정된 로봇 pose |
-| publish | `~/vmarker_pose` | `PoseWithCovarianceStamped` | V-마커 검출 위치 |
-| publish | `~/corrected_vmarker_pose` | `PoseStamped` | 오프셋 보정 도킹 목표 |
-| TF publish | `map → odom → base_link` | TF2 | 10ms 주기 TF 트리 |
+| publish | `~/landmark_pose` | `PoseWithCovarianceStamped` | EKF 내부 랜드마크 상태 |
+| publish | `~/gyro_bias` | `Vector3Stamped` | 추정한 3축 gyro bias |
+| TF publish | `odom → base_link` | TF2 | 10ms 주기 로컬 odometry TF |
 
 ---
 

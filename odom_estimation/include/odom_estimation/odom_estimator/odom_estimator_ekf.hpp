@@ -18,23 +18,13 @@
 namespace gole {
 namespace odom_estimation {
 
-/**
- * @brief Simple example odom_estimator implementation for demonstration
- * 
- * This is a basic implementation that shows how to extend OdomEstimatorBase.
- * In a real scenario, this would contain actual localization algorithms.
- */
+/** @brief Wheel/IMU EKF odometry estimator with optional landmark correction. */
 class OdomEstimatorEKF : public OdomEstimatorBase {
 public:
     OdomEstimatorEKF(rclcpp_lifecycle::LifecycleNode* node,
                  std::shared_ptr<spdlog::logger> logger,
-                 std::shared_ptr<diagnostic::DiagnosticManager> diagnostic_manager,
                  const Params& params);
     ~OdomEstimatorEKF() override = default;
-
-    // bool start() override;
-    // bool stop() override;
-    // bool reset() override;
 
     void processInitialPose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr pose) override;
     void processLandmarkObservation(
@@ -64,7 +54,7 @@ private:
     bool correctionLandmarkObservation(
         const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr observation);
     /**
-     * @brief Correction step of EKF using IMU measurement (yaw only)
+     * @brief Correct the gyro-z rate state and stationary 3-axis gyro biases
      * @param imu IMU measurement
      * @return true if correction was successful
      */
@@ -83,12 +73,20 @@ private:
 private:
     rclcpp::TimerBase::SharedPtr sensor_fusion_timer_;
     std::mutex measurement_mutex_;
-    nav_msgs::msg::Odometry::SharedPtr latest_wheel_odom_;
-    sensor_msgs::msg::Imu::SharedPtr latest_imu_;
     std::deque<nav_msgs::msg::Odometry::SharedPtr> wheel_odom_queue_;
     std::deque<sensor_msgs::msg::Imu::SharedPtr> imu_queue_;
-    bool has_new_wheel_{false};
-    bool has_new_imu_{false};
+    bool first_sensor_time_aligned_{false};
+    bool has_wheel_measurement_{false};
+    bool gyro_bias_initialized_{false};
+    std::optional<rclcpp::Time> last_received_wheel_stamp_;
+    std::optional<rclcpp::Time> last_received_imu_stamp_;
+    std::optional<double> last_accepted_wheel_v_;
+    std::optional<double> latest_wheel_angular_z_;
+    std::optional<double> last_accepted_gyro_z_;
+    geometry_msgs::msg::Vector3 last_body_angular_velocity_{};
+    std::optional<rclcpp::Time> stationary_start_time_;
+    Eigen::Vector3d stationary_gyro_sum_{Eigen::Vector3d::Zero()};
+    std::size_t stationary_gyro_samples_{0};
 
     // Landmark covariance convergence tracking
     std::vector<double> lm_covariance_history_;  // Store recent covariance norms

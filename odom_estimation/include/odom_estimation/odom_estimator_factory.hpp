@@ -4,7 +4,6 @@
 #include <memory>
 
 #include "odom_estimation/odom_estimator/odom_estimator_base.hpp"
-#include "diagnostic/diagnostic_manager.hpp"
 #include "logger/logger.hpp"
 
 namespace gole {
@@ -19,7 +18,6 @@ public:
         const std::string& odom_estimator_type, 
         rclcpp_lifecycle::LifecycleNode* node,
         std::shared_ptr<spdlog::logger> logger,
-        std::shared_ptr<diagnostic::DiagnosticManager> diagnostic_manager,
         const Params& params);
 };
 
