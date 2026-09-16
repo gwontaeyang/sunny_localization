@@ -4,9 +4,12 @@
 #include <pcl/common/transforms.h>
 #include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/registration/gicp.h>
+#include <pcl/registration/icp.h>
+#include <pcl/registration/ndt.h>
 
 #ifdef SLAM_3D_LOCALIZATION_HAS_FAST_GICP
 #include <fast_gicp/gicp/fast_gicp.hpp>
+#include <fast_gicp/gicp/fast_vgicp.hpp>
 #include <fast_gicp/gicp/gicp_settings.hpp>
 #endif
 
@@ -41,6 +44,81 @@ using Clock = std::chrono::steady_clock;
 double elapsedMs(const Clock::time_point & start)
 {
   return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+}
+
+bool positiveFinite(const double value)
+{
+  return std::isfinite(value) && value > 0.0;
+}
+
+const RegistrationBackendConfig & validateAdditionalBackendConfig(
+  const RegistrationBackendConfig & config)
+{
+  if (config.max_iterations <= 0 || !positiveFinite(config.max_correspondence_m) ||
+    !positiveFinite(config.transformation_epsilon) || !positiveFinite(config.fitness_epsilon))
+  {
+    throw std::invalid_argument(config.method + ": invalid common registration configuration");
+  }
+  if (config.method == "ndt" &&
+    (!positiveFinite(config.ndt_resolution_m) ||
+    !positiveFinite(static_cast<float>(config.ndt_resolution_m)) ||
+    !positiveFinite(config.ndt_step_size_m) ||
+    !std::isfinite(config.ndt_outlier_ratio) ||
+    config.ndt_outlier_ratio <= 0.0 || config.ndt_outlier_ratio >= 1.0))
+  {
+    throw std::invalid_argument(
+            "ndt requires finite positive resolution/step size and 0 < outlier ratio < 1");
+  }
+  const bool uses_fast_gicp = config.method == "fast_gicp" ||
+    config.method == "fast_vgicp" || config.method == "fast_vgicp_cuda";
+  if (uses_fast_gicp) {
+    if (config.fast_gicp_num_threads < 0 || config.fast_gicp_correspondence_randomness < 3 ||
+      !positiveFinite(config.fast_gicp_rotation_epsilon_rad))
+    {
+      throw std::invalid_argument(
+              config.method + ": requires threads >= 0, covariance k >= 3 and finite positive rotation epsilon");
+    }
+    const auto & regularization = config.fast_gicp_regularization_method;
+    if (regularization != "NONE" && regularization != "MIN_EIG" &&
+      regularization != "NORMALIZED_MIN_EIG" && regularization != "PLANE" &&
+      regularization != "FROBENIUS")
+    {
+      throw std::invalid_argument("unknown fast_gicp_regularization_method: " + regularization);
+    }
+  }
+  if (config.method == "fast_vgicp") {
+    if (!positiveFinite(config.fast_vgicp_voxel_resolution_m)) {
+      throw std::invalid_argument("fast_vgicp requires finite positive voxel resolution");
+    }
+    const auto & method = config.fast_vgicp_neighbor_search_method;
+    if (method != "DIRECT1" && method != "DIRECT7" && method != "DIRECT27") {
+      throw std::invalid_argument(
+              "fast_vgicp_neighbor_search_method must be DIRECT1, DIRECT7 or DIRECT27");
+    }
+  }
+  if (config.method == "fast_vgicp_cuda") {
+    if (!positiveFinite(config.fast_vgicp_cuda_voxel_resolution_m) ||
+      !positiveFinite(config.fast_vgicp_cuda_neighbor_search_radius) ||
+      !positiveFinite(config.fast_vgicp_cuda_kernel_width) ||
+      !positiveFinite(config.fast_vgicp_cuda_kernel_max_distance))
+    {
+      throw std::invalid_argument(
+              "fast_vgicp_cuda requires finite positive resolution/radius/kernel sizes");
+    }
+    const auto & voxel_search = config.fast_vgicp_cuda_neighbor_search_method;
+    if (voxel_search != "DIRECT1" && voxel_search != "DIRECT7" &&
+      voxel_search != "DIRECT27" && voxel_search != "DIRECT_RADIUS")
+    {
+      throw std::invalid_argument("unknown fast_vgicp_cuda_neighbor_search_method: " + voxel_search);
+    }
+    const auto & covariance_search = config.fast_vgicp_cuda_nearest_neighbor_method;
+    if (covariance_search != "CPU_PARALLEL_KDTREE" &&
+      covariance_search != "GPU_BRUTEFORCE" && covariance_search != "GPU_RBF_KERNEL")
+    {
+      throw std::invalid_argument("unknown fast_vgicp_cuda_nearest_neighbor_method: " + covariance_search);
+    }
+  }
+  return config;
 }
 
 bool validateTarget(
@@ -240,6 +318,49 @@ private:
   std::uint64_t call_count_{0};
 };
 
+class PclIcpBackend final :
+  public PclStyleBackend<pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ>>
+{
+public:
+  using Base = PclStyleBackend<pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ>>;
+  explicit PclIcpBackend(const RegistrationBackendConfig & config)
+  : Base(validateAdditionalBackendConfig(config)) {}
+  const char * name() const noexcept override {return "icp";}
+  bool isCuda() const noexcept override {return false;}
+  std::string runtimeDescription() const override
+  {
+    return "PCL IterativeClosestPoint (CPU, point-to-point, cached target KD-tree)";
+  }
+};
+
+class PclNdtBackend final :
+  public PclStyleBackend<pcl::NormalDistributionsTransform<pcl::PointXYZ, pcl::PointXYZ>>
+{
+public:
+  using Base = PclStyleBackend<pcl::NormalDistributionsTransform<pcl::PointXYZ, pcl::PointXYZ>>;
+  explicit PclNdtBackend(const RegistrationBackendConfig & config)
+  : Base(validateAdditionalBackendConfig(config))
+  {
+    const auto start = Clock::now();
+    registration_->setResolution(static_cast<float>(config_.ndt_resolution_m));
+    registration_->setStepSize(config_.ndt_step_size_m);
+    // PCL 1.12 deliberately spells this public API "Oulier".
+    registration_->setOulierRatio(config_.ndt_outlier_ratio);
+    initialization_runtime_ms_ += elapsedMs(start);
+  }
+  const char * name() const noexcept override {return "ndt";}
+  bool isCuda() const noexcept override {return false;}
+  std::string runtimeDescription() const override
+  {
+    std::ostringstream description;
+    description << "PCL NormalDistributionsTransform (CPU, voxel="
+                << config_.ndt_resolution_m << " m, step_size=" << config_.ndt_step_size_m
+                << ", outlier_ratio=" << config_.ndt_outlier_ratio
+                << ", cached target voxel grid, Euclidean fitness)";
+    return description.str();
+  }
+};
+
 class PclGicpBackend final :
   public PclStyleBackend<pcl::GeneralizedIterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ>>
 {
@@ -290,7 +411,7 @@ public:
   using Base = PclStyleBackend<fast_gicp::FastGICP<pcl::PointXYZ, pcl::PointXYZ>>;
 
   explicit FastGicpBackend(const RegistrationBackendConfig & config)
-  : Base(config)
+  : Base(validateAdditionalBackendConfig(config))
   {
     const auto start = Clock::now();
     registration_->setNumThreads(config_.fast_gicp_num_threads);
@@ -321,6 +442,49 @@ public:
     return description.str();
   }
 
+};
+
+fast_gicp::NeighborSearchMethod cpuVoxelNeighborMethod(const std::string & name)
+{
+  if (name == "DIRECT1") {return fast_gicp::NeighborSearchMethod::DIRECT1;}
+  if (name == "DIRECT7") {return fast_gicp::NeighborSearchMethod::DIRECT7;}
+  if (name == "DIRECT27") {return fast_gicp::NeighborSearchMethod::DIRECT27;}
+  throw std::invalid_argument("unsupported fast_vgicp_neighbor_search_method: " + name);
+}
+
+class FastVgicpBackend final :
+  public PclStyleBackend<fast_gicp::FastVGICP<pcl::PointXYZ, pcl::PointXYZ>>
+{
+public:
+  using Base = PclStyleBackend<fast_gicp::FastVGICP<pcl::PointXYZ, pcl::PointXYZ>>;
+  explicit FastVgicpBackend(const RegistrationBackendConfig & config)
+  : Base(validateAdditionalBackendConfig(config))
+  {
+    const auto start = Clock::now();
+    registration_->setNumThreads(config_.fast_gicp_num_threads);
+    registration_->setCorrespondenceRandomness(config_.fast_gicp_correspondence_randomness);
+    registration_->setRegularizationMethod(
+      regularizationMethod(config_.fast_gicp_regularization_method));
+    registration_->setRotationEpsilon(config_.fast_gicp_rotation_epsilon_rad);
+    registration_->setResolution(config_.fast_vgicp_voxel_resolution_m);
+    registration_->setNeighborSearchMethod(
+      cpuVoxelNeighborMethod(config_.fast_vgicp_neighbor_search_method));
+    initialization_runtime_ms_ += elapsedMs(start);
+  }
+  const char * name() const noexcept override {return "fast_vgicp";}
+  bool isCuda() const noexcept override {return false;}
+  std::string runtimeDescription() const override
+  {
+    std::ostringstream description;
+    description << "fast_gicp FastVGICP (OpenMP CPU, threads="
+                << config_.fast_gicp_num_threads << ", k="
+                << config_.fast_gicp_correspondence_randomness << ", regularization="
+                << config_.fast_gicp_regularization_method << ", voxel="
+                << config_.fast_vgicp_voxel_resolution_m << " m, voxel_neighbors="
+                << config_.fast_vgicp_neighbor_search_method
+                << ", cached target covariance; upstream voxel grid rebuilt per align)";
+    return description.str();
+  }
 };
 #endif
 
@@ -448,6 +612,7 @@ private:
   static RegistrationBackendConfig validateAndReturn(
     const RegistrationBackendConfig & config)
   {
+    validateAdditionalBackendConfig(config);
     int device_count = 0;
     requireCudaSuccess(cudaGetDeviceCount(&device_count), "cudaGetDeviceCount");
     if (device_count <= 0) {
@@ -475,15 +640,17 @@ private:
 
 bool isKnownRegistrationBackend(const std::string & method) noexcept
 {
-  return method == "voxel_surfel" || method == "gicp" || method == "fast_gicp" ||
+  return method == "voxel_surfel" || method == "icp" || method == "ndt" ||
+         method == "gicp" || method == "fast_gicp" || method == "fast_vgicp" ||
          method == "fast_vgicp_cuda";
 }
 
 std::vector<std::string> availableRegistrationBackends()
 {
-  std::vector<std::string> methods{"gicp", "voxel_surfel"};
+  std::vector<std::string> methods{"gicp", "voxel_surfel", "icp", "ndt"};
 #ifdef SLAM_3D_LOCALIZATION_HAS_FAST_GICP
   methods.emplace_back("fast_gicp");
+  methods.emplace_back("fast_vgicp");
 #endif
 #ifdef SLAM_3D_LOCALIZATION_HAS_FAST_VGICP_CUDA
   methods.emplace_back("fast_vgicp_cuda");
@@ -624,8 +791,22 @@ RegistrationAcceptance evaluateMapRegistration(
 std::unique_ptr<RegistrationBackend> createRegistrationBackend(
   const RegistrationBackendConfig & config)
 {
+  // Validate optional-backend parameters before either dependency errors or
+  // CUDA device access, including use from the LIO node rather than map-only
+  // parameter validation. Valid unavailable backends still fail explicitly.
+  if (config.method == "fast_gicp" || config.method == "fast_vgicp" ||
+    config.method == "fast_vgicp_cuda")
+  {
+    validateAdditionalBackendConfig(config);
+  }
   if (config.method == "voxel_surfel") {
     return std::make_unique<VoxelSurfelBackend>(config);
+  }
+  if (config.method == "icp") {
+    return std::make_unique<PclIcpBackend>(config);
+  }
+  if (config.method == "ndt") {
+    return std::make_unique<PclNdtBackend>(config);
   }
   if (config.method == "gicp") {
     return std::make_unique<PclGicpBackend>(config);
@@ -647,6 +828,15 @@ std::unique_ptr<RegistrationBackend> createRegistrationBackend(
             "registration_method=fast_vgicp_cuda was requested, but the CUDA backend "
             "was not compiled and link-verified; available backends: " +
             availableBackendList());
+#endif
+  }
+  if (config.method == "fast_vgicp") {
+#ifdef SLAM_3D_LOCALIZATION_HAS_FAST_GICP
+    return std::make_unique<FastVgicpBackend>(config);
+#else
+    throw std::runtime_error(
+            "registration_method=fast_vgicp was requested, but slam_3d_localization "
+            "was built without fast_gicp; available backends: " + availableBackendList());
 #endif
   }
   throw std::invalid_argument("unknown registration backend: " + config.method);

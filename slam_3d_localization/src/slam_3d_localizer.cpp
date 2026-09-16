@@ -1,5 +1,6 @@
 // Copyright 2026 Gole Robotics
 #include "slam_3d_localization/slam_3d_localizer.hpp"
+#include "slam_3d_localization/registration_parameters.hpp"
 
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
 #include <diagnostic_msgs/msg/key_value.hpp>
@@ -267,6 +268,7 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
     isKnownRegistrationBackend(registration_method_);
   const bool uses_fast_gicp =
     registration_method_ == "fast_gicp" ||
+    registration_method_ == "fast_vgicp" ||
     registration_method_ == "fast_vgicp_cuda";
   const bool valid_fast_gicp_parameters =
     !uses_fast_gicp ||
@@ -363,6 +365,7 @@ Slam3dLocalizer::Slam3dLocalizer(const rclcpp::NodeOptions & options)
   backend_config.fast_vgicp_cuda_kernel_max_distance =
     fast_vgicp_cuda_kernel_max_distance_;
   backend_config.surfel = surfel_config_;
+  declareSelectedRegistrationParameters(*this, backend_config);
   registration_backend_ = createRegistrationBackend(backend_config);
   registration_quality_limits_ = {
     fitness_threshold_, max_correction_translation_m_, max_correction_rotation_deg_,
@@ -1225,6 +1228,8 @@ void Slam3dLocalizer::publishDiagnostic(
   status.values.push_back(keyValue("runtime_ms", std::to_string(runtime_ms)));
   status.values.push_back(keyValue("callback_runtime_ms", std::to_string(runtime_ms)));
   status.values.push_back(keyValue("registration_method", registration_method_));
+  status.values.push_back(keyValue(
+    "registration_backend_description", registration_backend_->runtimeDescription()));
   const RegistrationBackendBuildInfo backend_build = registrationBackendBuildInfo();
   status.values.push_back(
     keyValue(

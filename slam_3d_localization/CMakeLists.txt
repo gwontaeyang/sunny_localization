@@ -49,7 +49,7 @@ if(NOT _fast_gicp_mode STREQUAL "OFF")
       "SLAM_3D_LOCALIZATION_FAST_GICP=ON, but fast_gicp was not found")
   else()
     message(STATUS
-      "slam_3d_localization: fast_gicp not found; gicp and voxel_surfel remain available")
+      "slam_3d_localization: fast_gicp not found; icp, gicp, ndt and voxel_surfel remain available")
   endif()
 endif()
 
@@ -215,6 +215,9 @@ install(TARGETS
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config launch rviz DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY patches DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY docs DESTINATION share/${PROJECT_NAME})
+install(PROGRAMS scripts/setup_registration_dependencies.sh
+  DESTINATION share/${PROJECT_NAME}/scripts)
 install(PROGRAMS
   scripts/evaluate_localization_replay.py
   scripts/estimate_imu_open_loop.py

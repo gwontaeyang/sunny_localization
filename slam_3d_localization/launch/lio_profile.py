@@ -5,6 +5,25 @@ import json
 from pathlib import Path
 
 
+REGISTRATION_METHODS = (
+    "icp", "gicp", "ndt", "voxel_surfel", "fast_gicp", "fast_vgicp", "fast_vgicp_cuda",
+)
+
+
+def registration_method_override(value, argument_name="registration_method"):
+    """Empty launch arguments leave the user file and C++ defaults untouched."""
+    method = value.strip()
+    if not method:
+        return {}
+    if method not in REGISTRATION_METHODS:
+        raise ValueError(
+            f"Unknown {argument_name}={method!r}; expected one of: "
+            + ", ".join(REGISTRATION_METHODS)
+        )
+    # Compiled backend availability is checked by the node, not guessed here.
+    return {"registration_method": method}
+
+
 def get_lio_pipeline_parameters():
     """Return fresh ROS parameter mappings; user files may override any key."""
     lio_outputs = {

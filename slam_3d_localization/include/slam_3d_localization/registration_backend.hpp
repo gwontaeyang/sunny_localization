@@ -23,10 +23,15 @@ struct RegistrationBackendConfig
   double max_correspondence_m{2.0};
   double transformation_epsilon{1.0e-3};
   double fitness_epsilon{1.0e-3};
+  double ndt_resolution_m{3.0};
+  double ndt_step_size_m{0.1};
+  double ndt_outlier_ratio{0.55};
   int fast_gicp_num_threads{4};
   int fast_gicp_correspondence_randomness{20};
   std::string fast_gicp_regularization_method{"PLANE"};
   double fast_gicp_rotation_epsilon_rad{2.0e-3};
+  double fast_vgicp_voxel_resolution_m{1.0};
+  std::string fast_vgicp_neighbor_search_method{"DIRECT1"};
   double fast_vgicp_cuda_voxel_resolution_m{1.0};
   std::string fast_vgicp_cuda_neighbor_search_method{"DIRECT1"};
   double fast_vgicp_cuda_neighbor_search_radius{1.5};

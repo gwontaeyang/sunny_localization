@@ -1,5 +1,6 @@
 // Copyright 2026 Gole Robotics
 #include "slam_3d_localization/lio_odometry.hpp"
+#include "slam_3d_localization/registration_parameters.hpp"
 
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
 #include <diagnostic_msgs/msg/key_value.hpp>
@@ -227,10 +228,14 @@ LioOdometry::LioOdometry(const rclcpp::NodeOptions & options)
   registration_config.max_iterations = gicp_max_iterations_;
   registration_config.max_correspondence_m = gicp_max_correspondence_m_;
   registration_config.surfel = surfel_config_;
+  declareSelectedRegistrationParameters(*this, registration_config);
   registration_backend_ = createRegistrationBackend(registration_config);
   registration_quality_limits_ = {
     fitness_threshold_, max_correction_translation_m_, max_correction_rotation_deg_};
   setupRosInterfaces();
+  RCLCPP_INFO(
+    get_logger(), "LIO registration backend active: %s; %s",
+    registration_backend_->name(), registration_backend_->runtimeDescription().c_str());
   RCLCPP_INFO(
     get_logger(),
     "Odometry ready: mode=%s, cloud='%s', imu='%s', odom='%s', wheel_aiding=%s, imu_bias_estimation=%s",
@@ -475,7 +480,7 @@ void LioOdometry::declareAndValidateParameters()
   const bool valid_modes =
     (point_time_mode_ == "auto" || point_time_mode_ == "absolute_seconds" ||
     point_time_mode_ == "relative_seconds" || point_time_mode_ == "relative_nanoseconds") &&
-    (registration_method_ == "gicp" || registration_method_ == "voxel_surfel");
+    isKnownRegistrationBackend(registration_method_);
   const std::array<double, 27> scalar_values = {
     tf_timeout_s_, imu_epoch_reset_threshold_s_, imu_buffer_duration_s_,
     max_scan_duration_s_, point_time_header_tolerance_s_, imu_gap_position_std_m_,
@@ -2059,6 +2064,8 @@ void LioOdometry::publishDiagnostic(
       "wheel_correction_enabled", wheel_correction_enabled_ ? "true" : "false"));
   status.values.push_back(keyValue("wheel_update_count", std::to_string(wheel_update_count_)));
   status.values.push_back(keyValue("registration_method", registration_method_));
+  status.values.push_back(keyValue(
+    "registration_backend_description", registration_backend_->runtimeDescription()));
   status.values.push_back(keyValue("scan_points", std::to_string(scan_points)));
   status.values.push_back(keyValue("local_submap_points", std::to_string(map_points)));
   status.values.push_back(keyValue("keyframes", std::to_string(keyframe_count)));
