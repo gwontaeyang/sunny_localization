@@ -1,5 +1,6 @@
 // Copyright 2026 Gole Robotics
 #include "slam_3d_localization/lio_odometry.hpp"
+#include "slam_3d_localization/registration_parameters.hpp"
 
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
 #include <diagnostic_msgs/msg/key_value.hpp>
@@ -7,8 +8,6 @@
 #include <pcl/common/transforms.h>
 #include <pcl/filters/crop_box.h>
 #include <pcl/filters/voxel_grid.h>
-#include <pcl/kdtree/kdtree_flann.h>
-#include <pcl/registration/gicp.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <sensor_msgs/msg/point_field.hpp>
 #include <tf2/exceptions.h>
@@ -224,12 +223,32 @@ LioOdometry::LioOdometry(const rclcpp::NodeOptions & options)
   imu_initializer_ = StationaryImuInitializer(initializer_config_);
   corrected_estimator_ = LioStateEstimator(state_config_);
   live_estimator_ = LioStateEstimator(state_config_);
+  RegistrationBackendConfig registration_config;
+  registration_config.method = registration_method_;
+  registration_config.max_iterations = gicp_max_iterations_;
+  registration_config.max_correspondence_m = gicp_max_correspondence_m_;
+  registration_config.surfel = surfel_config_;
+  declareSelectedRegistrationParameters(*this, registration_config);
+  registration_backend_ = createRegistrationBackend(registration_config);
+  registration_quality_limits_ = {
+    fitness_threshold_, max_correction_translation_m_, max_correction_rotation_deg_};
   setupRosInterfaces();
   RCLCPP_INFO(
+    get_logger(), "LIO registration backend active: %s; %s",
+    registration_backend_->name(), registration_backend_->runtimeDescription().c_str());
+  RCLCPP_INFO(
     get_logger(),
-    "Wheel-free LIO ready: cloud='%s', imu='%s', odom='%s', wheel_aiding=%s",
-    cloud_topic_.c_str(), imu_topic_.c_str(), odom_topic_.c_str(),
-    wheel_correction_enabled_ ? "enabled" : "disabled");
+    "Odometry ready: mode=%s, cloud='%s', imu='%s', odom='%s', wheel_aiding=%s, imu_bias_estimation=%s",
+    imu_enabled_ ? "lidar_imu" : "lidar_only (no deskew; scan-rate TF)",
+    cloud_topic_.c_str(), imu_enabled_ ? imu_topic_.c_str() : "disabled",
+    odom_topic_.c_str(),
+    wheel_correction_enabled_ ? "enabled" : "disabled",
+    imu_enabled_ && state_config_.imu_bias_estimation_enabled ? "enabled" : "disabled (fixed zero)");
+  RCLCPP_WARN(
+    get_logger(),
+    "CPU-first defaults: <=1024 sampled points; %s. Reduced accuracy/output cadence.",
+    imu_enabled_ ? "LiDAR <=0.5 Hz, odom/TF <=2 Hz, queued IMU samples integrated" :
+    "LiDAR-only mode uses scan-rate odom/TF");
 }
 
 void LioOdometry::declareAndValidateParameters()
@@ -255,6 +274,10 @@ void LioOdometry::declareAndValidateParameters()
   registration_method_ = declare_parameter<std::string>(
     "registration_method", registration_method_);
   publish_tf_ = declare_parameter<bool>("publish_tf", publish_tf_);
+  imu_enabled_ = declare_parameter<bool>("imu_enabled", imu_enabled_);
+  state_config_.imu_bias_estimation_enabled = declare_parameter<bool>(
+    "imu_bias_estimation_enabled", state_config_.imu_bias_estimation_enabled);
+  initializer_config_.imu_bias_estimation_enabled = state_config_.imu_bias_estimation_enabled;
   wheel_correction_enabled_ = declare_parameter<bool>(
     "wheel_correction_enabled", wheel_correction_enabled_);
   require_point_time_ = declare_parameter<bool>("require_point_time", require_point_time_);
@@ -403,36 +426,37 @@ void LioOdometry::declareAndValidateParameters()
       }
       return static_cast<std::size_t>(configured);
     };
+  // Keep enough neighbours per surfel after coarse scan/submap downsampling.
   surfel_config_.voxel_size = declare_parameter<double>(
-    "surfel_voxel_size_m", surfel_config_.voxel_size);
+    "surfel_voxel_size_m", 2.0);
   surfel_config_.min_points_per_voxel = declare_positive_size(
-    "surfel_min_points_per_voxel", surfel_config_.min_points_per_voxel);
+    "surfel_min_points_per_voxel", 3U);
   surfel_config_.max_planarity_ratio = declare_parameter<double>(
-    "surfel_max_planarity_ratio", surfel_config_.max_planarity_ratio);
+    "surfel_max_planarity_ratio", 0.25);
   surfel_config_.min_tangent_variance = declare_parameter<double>(
     "surfel_min_tangent_variance", surfel_config_.min_tangent_variance);
   surfel_config_.max_plane_distance = declare_parameter<double>(
     "surfel_max_plane_distance_m", surfel_config_.max_plane_distance);
   surfel_config_.max_center_distance = declare_parameter<double>(
-    "surfel_max_center_distance_m", surfel_config_.max_center_distance);
+    "surfel_max_center_distance_m", 2.5);
   surfel_config_.min_correspondences = declare_positive_size(
-    "surfel_min_correspondences", surfel_config_.min_correspondences);
+    "surfel_min_correspondences", 40U);
   surfel_config_.min_correspondence_ratio = declare_parameter<double>(
-    "surfel_min_correspondence_ratio", surfel_config_.min_correspondence_ratio);
+    "surfel_min_correspondence_ratio", 0.08);
   surfel_config_.huber_delta = declare_parameter<double>(
     "surfel_huber_delta_m", surfel_config_.huber_delta);
   surfel_config_.max_iterations = declare_parameter<int>(
-    "surfel_max_iterations", surfel_config_.max_iterations);
+    "surfel_max_iterations", 4);
   surfel_config_.max_backtracking_steps = declare_parameter<int>(
-    "surfel_max_backtracking_steps", surfel_config_.max_backtracking_steps);
+    "surfel_max_backtracking_steps", 2);
   surfel_config_.backtracking_factor = declare_parameter<double>(
     "surfel_backtracking_factor", surfel_config_.backtracking_factor);
   surfel_config_.rotation_convergence_rad = declare_parameter<double>(
-    "surfel_rotation_convergence_rad", surfel_config_.rotation_convergence_rad);
+    "surfel_rotation_convergence_rad", 0.0002);
   surfel_config_.translation_convergence_m = declare_parameter<double>(
-    "surfel_translation_convergence_m", surfel_config_.translation_convergence_m);
+    "surfel_translation_convergence_m", 0.0002);
   surfel_config_.relative_cost_convergence = declare_parameter<double>(
-    "surfel_relative_cost_convergence", surfel_config_.relative_cost_convergence);
+    "surfel_relative_cost_convergence", 0.00001);
   surfel_config_.max_rotation_step_rad = declare_parameter<double>(
     "surfel_max_rotation_step_rad", surfel_config_.max_rotation_step_rad);
   surfel_config_.max_translation_step_m = declare_parameter<double>(
@@ -444,9 +468,9 @@ void LioOdometry::declareAndValidateParameters()
   surfel_config_.min_observable_rank = declare_parameter<int>(
     "surfel_min_observable_rank", surfel_config_.min_observable_rank);
   surfel_config_.max_quality_rmse = declare_parameter<double>(
-    "surfel_max_quality_rmse_m", surfel_config_.max_quality_rmse);
+    "surfel_max_quality_rmse_m", 0.30);
   surfel_config_.max_quality_p95 = declare_parameter<double>(
-    "surfel_max_quality_p95_m", surfel_config_.max_quality_p95);
+    "surfel_max_quality_p95_m", 0.50);
 
   const bool valid_strings = !cloud_topic_.empty() && !imu_topic_.empty() &&
     !odom_topic_.empty() && !scan_odom_topic_.empty() && scan_odom_topic_ != odom_topic_ &&
@@ -456,7 +480,7 @@ void LioOdometry::declareAndValidateParameters()
   const bool valid_modes =
     (point_time_mode_ == "auto" || point_time_mode_ == "absolute_seconds" ||
     point_time_mode_ == "relative_seconds" || point_time_mode_ == "relative_nanoseconds") &&
-    (registration_method_ == "gicp" || registration_method_ == "voxel_surfel");
+    isKnownRegistrationBackend(registration_method_);
   const std::array<double, 27> scalar_values = {
     tf_timeout_s_, imu_epoch_reset_threshold_s_, imu_buffer_duration_s_,
     max_scan_duration_s_, point_time_header_tolerance_s_, imu_gap_position_std_m_,
@@ -491,10 +515,24 @@ void LioOdometry::declareAndValidateParameters()
     lidar_weak_axis_noise_multiplier_ >= 1.0 &&
     wheel_max_abs_speed_mps_ > 0.0 && wheel_max_innovation_mps_ > 0.0 &&
     wheel_fallback_std_mps_ > 0.0;
+  if (!imu_enabled_ && wheel_correction_enabled_) {
+    throw std::invalid_argument("wheel_correction_enabled requires imu_enabled=true");
+  }
+  if (min_scan_points_ > static_cast<int>(LowComputeBudget::kMaxDeskewPoints)) {
+    throw std::invalid_argument(
+            "min_scan_points must not exceed the fixed scan point cap (" +
+            std::to_string(LowComputeBudget::kMaxDeskewPoints) + ")");
+  }
+  if (min_submap_points_ > static_cast<int>(LowComputeBudget::kMaxDeskewPoints)) {
+    throw std::invalid_argument(
+            "min_submap_points must not exceed the fixed scan point cap (" +
+            std::to_string(LowComputeBudget::kMaxDeskewPoints) +
+            "); the initial submap must be seedable from one scan");
+  }
   if (!valid_strings || !valid_modes || !finite_scalars || !valid_scalars ||
     !StationaryImuInitializer::isValidConfig(initializer_config_) ||
     !LioStateEstimator::isValidConfig(state_config_) ||
-    !::gole::slam_3d_core::VoxelSurfelRegistration::isValidConfig(surfel_config_) ||
+    !VoxelSurfelRegistration::isValidConfig(surfel_config_) ||
     (wheel_correction_enabled_ && wheel_topic_.empty()))
   {
     throw std::invalid_argument("invalid LIO parameters");
@@ -507,17 +545,31 @@ void LioOdometry::setupRosInterfaces()
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
-  imu_callback_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-  rclcpp::SubscriptionOptions imu_options;
-  imu_options.callback_group = imu_callback_group_;
-  imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
-    imu_topic_, rclcpp::SensorDataQoS().keep_last(400),
-    std::bind(&LioOdometry::imuCallback, this, std::placeholders::_1), imu_options);
+  if (imu_enabled_) {
+    imu_callback_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
+    rclcpp::SubscriptionOptions imu_options;
+    imu_options.callback_group = imu_callback_group_;
+    imu_options.use_intra_process_comm = rclcpp::IntraProcessSetting::Disable;
+    imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
+      imu_topic_, rclcpp::SensorDataQoS().keep_last(400),
+      std::bind(&LioOdometry::imuCallback, this, std::placeholders::_1), imu_options);
+    imu_take_timer_ = create_wall_timer(
+      std::chrono::milliseconds(LowComputeBudget::kImuBatchMs),
+      std::bind(&LioOdometry::takeImuBatch, this));
+  }
 
-  cloud_callback_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  // In LIO mode the executor must not eagerly deserialize every multi-MB scan.
+  // A bounded timer explicitly takes the newest DDS sample instead.
+  cloud_callback_group_ = create_callback_group(
+    rclcpp::CallbackGroupType::MutuallyExclusive, !imu_enabled_);
   rclcpp::SubscriptionOptions cloud_options;
   cloud_options.callback_group = cloud_callback_group_;
-  auto cloud_qos = rclcpp::QoS(rclcpp::KeepLast(cloud_subscription_depth_)).durability_volatile();
+  if (imu_enabled_) {
+    // Manual take uses the middleware queue, not the intra-process callback queue.
+    cloud_options.use_intra_process_comm = rclcpp::IntraProcessSetting::Disable;
+  }
+  const int effective_cloud_depth = imu_enabled_ ? 1 : cloud_subscription_depth_;
+  auto cloud_qos = rclcpp::QoS(rclcpp::KeepLast(effective_cloud_depth)).durability_volatile();
   if (cloud_subscription_reliable_) {
     cloud_qos.reliable();
   } else {
@@ -526,9 +578,15 @@ void LioOdometry::setupRosInterfaces()
   cloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
     cloud_topic_, cloud_qos,
     std::bind(&LioOdometry::cloudCallback, this, std::placeholders::_1), cloud_options);
-  cloud_processing_timer_ = create_wall_timer(
-    std::chrono::milliseconds(2),
-    std::bind(&LioOdometry::processPendingClouds, this), cloud_callback_group_);
+  if (imu_enabled_) {
+    cloud_take_timer_ = create_wall_timer(
+      std::chrono::nanoseconds(LowComputeBudget::kScanPeriodNs),
+      std::bind(&LioOdometry::takeLatestCloud, this));
+    cloud_processing_timer_ = create_wall_timer(
+      std::chrono::milliseconds(LowComputeBudget::kPendingRetryMs),
+      std::bind(&LioOdometry::processPendingClouds, this));
+    cloud_processing_timer_->cancel();
+  }
 
   if (wheel_correction_enabled_) {
     wheel_callback_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -569,8 +627,26 @@ std::optional<ImuMeasurement> LioOdometry::transformImuMeasurement(
   return measurement;
 }
 
+void LioOdometry::takeImuBatch()
+{
+  // Amortize executor dispatch while preserving every queued measurement and
+  // its original timestamp. Bounded draining cannot starve cloud/clock work.
+  rclcpp::MessageInfo info;
+  for (std::size_t index = 0; index < 64U; ++index) {
+    auto message = std::make_shared<sensor_msgs::msg::Imu>();
+    if (!imu_sub_->take(*message, info)) {
+      break;
+    }
+    imuCallback(std::move(message));
+  }
+}
+
 void LioOdometry::imuCallback(const sensor_msgs::msg::Imu::SharedPtr message)
 {
+  const ThreadCpuCounter::Scope cpu_scope(imu_callback_cpu_);
+  if (!imu_enabled_) {
+    return;
+  }
   const auto measurement_optional = transformImuMeasurement(*message);
   if (!measurement_optional.has_value()) {
     RCLCPP_WARN_THROTTLE(
@@ -662,8 +738,13 @@ void LioOdometry::imuCallback(const sensor_msgs::msg::Imu::SharedPtr message)
         latest_imu_stamp_ns_ = live_estimator_.stampNs();
       } else if (status == ImuPropagationStatus::kApplied) {
         boundImuBuffer();
-        publish_state = live_estimator_;
-        publish_revision = publication_revision_;
+        if (LowComputeBudget::odometryDue(
+            live_estimator_.stampNs(), last_imu_publish_snapshot_ns_))
+        {
+          last_imu_publish_snapshot_ns_ = live_estimator_.stampNs();
+          publish_state = live_estimator_;
+          publish_revision = publication_revision_;
+        }
       }
     }
   }
@@ -684,10 +765,57 @@ void LioOdometry::imuCallback(const sensor_msgs::msg::Imu::SharedPtr message)
   }
 }
 
+void LioOdometry::takeLatestCloud()
+{
+  const ThreadCpuCounter::Scope cpu_scope(cloud_take_cpu_);
+  auto message = std::make_shared<sensor_msgs::msg::PointCloud2>();
+  rclcpp::MessageInfo info;
+  if (cloud_sub_->take(*message, info)) {
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      ++cloud_samples_taken_;
+    }
+    cloudCallback(std::move(message));
+  }
+}
+
 void LioOdometry::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr message)
 {
+  const ThreadCpuCounter::Scope cpu_scope(cloud_callback_cpu_);
+  if (imu_enabled_) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (!LowComputeBudget::admitScan(
+        rosStampNs(message->header.stamp), last_admitted_cloud_stamp_ns_,
+        static_cast<std::int64_t>(imu_epoch_reset_threshold_s_ * 1.0e9)))
+    {
+      ++compute_budget_skipped_clouds_;
+      return;
+    }
+  }
   PendingCloud pending;
   pending.message = message;
+  if (!imu_enabled_) {
+    // A rigid, non-deskewed scan has one representative header timestamp.
+    // Do not inspect point times or wait for inertial initialization/coverage.
+    pending.start_stamp_ns = rosStampNs(message->header.stamp);
+    pending.end_stamp_ns = pending.start_stamp_ns;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      const auto reset_ns = static_cast<std::int64_t>(imu_epoch_reset_threshold_s_ * 1.0e9);
+      if (pending.end_stamp_ns >= 0 && lidar_only_input_stamp_ns_ >= 0 &&
+        pending.end_stamp_ns < lidar_only_input_stamp_ns_ - reset_ns)
+      {
+        resetForTimeEpoch("lidar_timestamp_epoch_reset");
+      }
+      if (pending.end_stamp_ns < 0 || pending.end_stamp_ns <= lidar_only_input_stamp_ns_) {
+        ++dropped_cloud_count_;
+        return;
+      }
+      lidar_only_input_stamp_ns_ = pending.end_stamp_ns;
+    }
+    processCloud(pending);
+    return;
+  }
   if (!pointCloudTimeBounds(
       *message, point_time_field_, point_time_mode_, max_scan_duration_s_,
       point_time_header_tolerance_s_, require_point_time_,
@@ -709,6 +837,9 @@ void LioOdometry::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr m
       pending_clouds_.pop_front();
       ++dropped_cloud_count_;
     }
+    if (cloud_processing_timer_->is_canceled()) {
+      cloud_processing_timer_->reset();
+    }
   }
 }
 
@@ -728,6 +859,9 @@ void LioOdometry::processPendingClouds()
       if (!corrected_estimator_.initialized() || pending_clouds_.empty() ||
         latest_imu_stamp_ns_ < pending_clouds_.front().end_stamp_ns)
       {
+        if (pending_clouds_.empty() && cloud_processing_timer_) {
+          cloud_processing_timer_->cancel();
+        }
         processing_cloud_ = false;
         processing_cloud_end_stamp_ns_ = 0;
         return;
@@ -745,6 +879,7 @@ void LioOdometry::processPendingClouds()
 
 void LioOdometry::processCloud(const PendingCloud & pending)
 {
+  const ThreadCpuCounter::Scope cpu_scope(cloud_process_cpu_);
   if (pending.message->header.frame_id.empty()) {
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
@@ -774,6 +909,11 @@ void LioOdometry::processCloud(const PendingCloud & pending)
         diagnostic_msgs::msg::DiagnosticStatus::WARN, "degraded", "cloud_tf_unavailable");
       return;
     }
+  }
+
+  if (!imu_enabled_) {
+    processLidarOnlyCloud(pending, base_T_sensor);
+    return;
   }
 
   LioStateEstimator estimator_at_end(state_config_);
@@ -947,7 +1087,7 @@ void LioOdometry::processCloud(const PendingCloud & pending)
     return;
   }
   RegistrationOutcome registration = registerScan(
-    *scan, *local_map, odomTBase(estimator_at_end));
+    scan, local_map, odomTBase(estimator_at_end));
   if (!registration.accepted) {
     LioStateEstimator anchor_state(state_config_);
     LioStateEstimator live_state(state_config_);
@@ -1275,6 +1415,129 @@ bool LioOdometry::applyWheelObservation(
     equivalent_imu_origin_speed, observation.standard_deviation_mps);
 }
 
+void LioOdometry::processLidarOnlyCloud(
+  const PendingCloud & pending, const Eigen::Isometry3d & base_T_sensor)
+{
+  const rclcpp::Time stamp(pending.end_stamp_ns, RCL_ROS_TIME);
+  std::size_t valid_input_points = 0U;
+  const auto scan = prepareAndDeskewCloud(
+    *pending.message, base_T_sensor, {}, Eigen::Isometry3d::Identity(),
+    pending.start_stamp_ns, pending.end_stamp_ns, false, valid_input_points);
+  if (!scan || scan->size() < static_cast<std::size_t>(min_scan_points_)) {
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      ++dropped_cloud_count_;
+    }
+    publishDiagnostic(stamp, diagnostic_msgs::msg::DiagnosticStatus::WARN,
+      "degraded", "insufficient_scan_points", nullptr, scan ? scan->size() : 0U);
+    return;
+  }
+
+  Eigen::Isometry3d previous_pose;
+  std::int64_t previous_stamp_ns;
+  std::uint64_t revision;
+  bool first_reference;
+  CloudT::ConstPtr submap;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    previous_pose = lidar_only_pose_;
+    previous_stamp_ns = lidar_only_pose_stamp_ns_;
+    first_reference = !have_lidar_reference_;
+    revision = state_revision_;
+    std::lock_guard<std::mutex> submap_lock(submap_mutex_);
+    submap = rolling_submap_;
+  }
+  RegistrationOutcome registration;
+  registration.odom_T_base = previous_pose;
+  std::size_t map_points = submap->size();
+  if (first_reference) {
+    registration.accepted = scan->size() >= static_cast<std::size_t>(min_submap_points_);
+    registration.reason = registration.accepted ?
+      "first_lidar_reference" : "insufficient_first_submap_points";
+  } else {
+    const auto local_map = buildLocalSubmap(submap, previous_pose.translation());
+    map_points = local_map->size();
+    if (map_points < static_cast<std::size_t>(min_submap_points_)) {
+      registration.reason = "insufficient_local_submap";
+    } else {
+      // No wheel, inertial integration, gravity alignment or ESKF correction.
+      registration = registerScan(scan, local_map, previous_pose);
+    }
+  }
+  if (!registration.accepted) {
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      ++rejected_registration_count_;
+    }
+    // Without a motion source there is no valid new odometry on rejection.
+    // Keep the accepted pose/submap and do not publish a stale pose as fresh.
+    publishDiagnostic(stamp, diagnostic_msgs::msg::DiagnosticStatus::ERROR,
+      "lost", registration.reason, &registration, scan->size(), map_points);
+    return;
+  }
+  const auto & pose = registration.odom_T_base;
+  if (!updateKeyframeMapIfCurrent(
+      *scan, pose, revision, first_reference, true, map_points))
+  {
+    return;
+  }
+
+  nav_msgs::msg::Odometry odometry;
+  odometry.header.stamp = stamp;
+  odometry.header.frame_id = odom_frame_;
+  odometry.child_frame_id = base_frame_;
+  odometry.pose.pose = isometryToPose(pose);
+  // Deliberately uncalibrated conservative covariance; not an ESKF posterior.
+  for (std::size_t axis = 0; axis < 6U; ++axis) {
+    odometry.pose.covariance[axis * 7U] = 1.0e3;
+    odometry.twist.covariance[axis * 7U] = 1.0e3;
+  }
+  if (previous_stamp_ns >= 0 && pending.end_stamp_ns > previous_stamp_ns) {
+    const double dt = static_cast<double>(pending.end_stamp_ns - previous_stamp_ns) * 1.0e-9;
+    const Eigen::Vector3d velocity = pose.linear().transpose() *
+      (pose.translation() - previous_pose.translation()) / dt;
+    const Eigen::AngleAxisd delta_rotation(previous_pose.linear().transpose() * pose.linear());
+    const Eigen::Vector3d angular_velocity = delta_rotation.axis() * delta_rotation.angle() / dt;
+    odometry.twist.twist.linear.x = velocity.x();
+    odometry.twist.twist.linear.y = velocity.y();
+    odometry.twist.twist.linear.z = velocity.z();
+    odometry.twist.twist.angular.x = angular_velocity.x();
+    odometry.twist.twist.angular.y = angular_velocity.y();
+    odometry.twist.twist.angular.z = angular_velocity.z();
+  }
+  sensor_msgs::msg::PointCloud2 cloud_message;
+  pcl::toROSMsg(*scan, cloud_message);
+  cloud_message.header = odometry.header;
+  cloud_message.header.frame_id = base_frame_;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (revision != state_revision_) {
+      return;
+    }
+    lidar_only_pose_ = pose;
+    lidar_only_pose_stamp_ns_ = pending.end_stamp_ns;
+    last_processed_cloud_stamp_ns_ = pending.end_stamp_ns;
+    last_propagation_status_ = "disabled_lidar_only";
+    if (!first_reference) {
+      ++accepted_registration_count_;
+    }
+    // Existing topic names are retained, including the legacy deskewed name.
+    scan_odom_pub_->publish(odometry);
+    deskewed_cloud_pub_->publish(cloud_message);
+    odom_pub_->publish(odometry);
+    if (publish_tf_) {
+      geometry_msgs::msg::TransformStamped transform;
+      transform.header = odometry.header;
+      transform.child_frame_id = base_frame_;
+      transform.transform = isometryToTransform(pose);
+      tf_broadcaster_->sendTransform(transform);
+    }
+  }
+  publishDiagnostic(stamp, diagnostic_msgs::msg::DiagnosticStatus::OK,
+    "tracking", registration.reason, first_reference ? nullptr : &registration,
+    scan->size(), map_points);
+}
+
 LioOdometry::CloudT::Ptr LioOdometry::prepareAndDeskewCloud(
   const sensor_msgs::msg::PointCloud2 & message,
   const Eigen::Isometry3d & base_T_sensor,
@@ -1285,15 +1548,20 @@ LioOdometry::CloudT::Ptr LioOdometry::prepareAndDeskewCloud(
 {
   CloudT::Ptr deskewed(new CloudT);
   valid_input_points = 0U;
-  if (message.is_bigendian || message.point_step == 0U || trajectory.empty()) {
+  if (message.is_bigendian || message.point_step == 0U ||
+    (imu_enabled_ && trajectory.empty()) ||
+    message.row_step < static_cast<std::uint64_t>(message.width) * message.point_step ||
+    static_cast<std::uint64_t>(message.row_step) * message.height > message.data.size())
+  {
     return deskewed;
   }
   const PointField * x_field = findField(message, "x");
   const PointField * y_field = findField(message, "y");
   const PointField * z_field = findField(message, "z");
-  const PointField * time_field = has_point_time ? findField(message, point_time_field_) : nullptr;
+  const PointField * time_field = imu_enabled_ && has_point_time ?
+    findField(message, point_time_field_) : nullptr;
   if (x_field == nullptr || y_field == nullptr || z_field == nullptr ||
-    (has_point_time && time_field == nullptr))
+    (imu_enabled_ && has_point_time && time_field == nullptr))
   {
     return deskewed;
   }
@@ -1306,55 +1574,61 @@ LioOdometry::CloudT::Ptr LioOdometry::prepareAndDeskewCloud(
     }
   }
 
-  deskewed->reserve(static_cast<std::size_t>(message.width) * message.height);
+  const std::size_t point_count = static_cast<std::size_t>(message.width) * message.height;
+  const std::size_t stride = LowComputeBudget::pointStride(point_count);
+  deskewed->reserve(std::min(point_count, LowComputeBudget::kMaxDeskewPoints));
   const Eigen::Isometry3d reference_T_odom = odom_T_base_reference.inverse();
   const std::int64_t header_stamp_ns = rosStampNs(message.header.stamp);
-  for (std::uint32_t row = 0; row < message.height; ++row) {
+  // Sample before numeric conversion, pose interpolation, transforms and voxel
+  // filtering. Organized row padding is retained; never reinterpret raw bytes.
+  for (std::size_t index = 0; index < point_count; index += stride) {
+    const std::size_t row = index / message.width;
+    const std::size_t column = index % message.width;
     const std::size_t row_offset = static_cast<std::size_t>(row) * message.row_step;
-    for (std::uint32_t column = 0; column < message.width; ++column) {
-      const std::size_t offset = row_offset + static_cast<std::size_t>(column) * message.point_step;
-      if (offset + message.point_step > message.data.size()) {
-        return CloudT::Ptr(new CloudT);
-      }
-      const std::uint8_t * point_data = message.data.data() + offset;
-      const double x = readNumericField(point_data, *x_field);
-      const double y = readNumericField(point_data, *y_field);
-      const double z = readNumericField(point_data, *z_field);
-      if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
-        continue;
-      }
-      ++valid_input_points;
-      std::int64_t point_stamp_ns = end_stamp_ns;
-      if (time_field != nullptr) {
-        point_stamp_ns = pointStampNs(
-          readNumericField(point_data, *time_field), point_time_mode_, header_stamp_ns);
-        if (point_stamp_ns < start_stamp_ns || point_stamp_ns > end_stamp_ns) {
-          continue;
-        }
-      }
-      const Eigen::Vector3d point_sensor(x, y, z);
-      const Eigen::Vector3d point_base = base_T_sensor * point_sensor;
-      const double range = std::hypot(point_base.x(), point_base.y());
-      if (range < min_range_m_ || range > max_range_m_ ||
-        point_base.z() < z_min_m_ || point_base.z() > z_max_m_)
-      {
-        continue;
-      }
-      if (crop_box_enabled_ &&
-        (point_base.array() >= crop_min_.array()).all() &&
-        (point_base.array() <= crop_max_.array()).all())
-      {
-        continue;
-      }
-      const Eigen::Isometry3d odom_T_base_point = interpolatePose(trajectory, point_stamp_ns);
-      const Eigen::Vector3d point_reference =
-        reference_T_odom * odom_T_base_point * point_base;
-      deskewed->push_back(
-        PointT(
-          static_cast<float>(point_reference.x()),
-          static_cast<float>(point_reference.y()),
-          static_cast<float>(point_reference.z())));
+    const std::size_t offset = row_offset + column * message.point_step;
+    if (offset + message.point_step > message.data.size()) {
+      return CloudT::Ptr(new CloudT);
     }
+    const std::uint8_t * point_data = message.data.data() + offset;
+    const double x = readNumericField(point_data, *x_field);
+    const double y = readNumericField(point_data, *y_field);
+    const double z = readNumericField(point_data, *z_field);
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+      continue;
+    }
+    ++valid_input_points;
+    std::int64_t point_stamp_ns = end_stamp_ns;
+    if (time_field != nullptr) {
+      point_stamp_ns = pointStampNs(
+        readNumericField(point_data, *time_field), point_time_mode_, header_stamp_ns);
+      if (point_stamp_ns < start_stamp_ns || point_stamp_ns > end_stamp_ns) {
+        continue;
+      }
+    }
+    const Eigen::Vector3d point_sensor(x, y, z);
+    const Eigen::Vector3d point_base = base_T_sensor * point_sensor;
+    const double range = std::hypot(point_base.x(), point_base.y());
+    if (range < min_range_m_ || range > max_range_m_ ||
+      point_base.z() < z_min_m_ || point_base.z() > z_max_m_)
+    {
+      continue;
+    }
+    if (crop_box_enabled_ &&
+      (point_base.array() >= crop_min_.array()).all() &&
+      (point_base.array() <= crop_max_.array()).all())
+    {
+      continue;
+    }
+    Eigen::Vector3d point_reference = point_base;
+    if (imu_enabled_) {
+      const Eigen::Isometry3d odom_T_base_point = interpolatePose(trajectory, point_stamp_ns);
+      point_reference = reference_T_odom * odom_T_base_point * point_base;
+    }
+    deskewed->push_back(
+      PointT(
+        static_cast<float>(point_reference.x()),
+        static_cast<float>(point_reference.y()),
+        static_cast<float>(point_reference.z())));
   }
   pcl::VoxelGrid<PointT> voxel;
   voxel.setLeafSize(scan_voxel_leaf_m_, scan_voxel_leaf_m_, scan_voxel_leaf_m_);
@@ -1365,75 +1639,30 @@ LioOdometry::CloudT::Ptr LioOdometry::prepareAndDeskewCloud(
 }
 
 LioOdometry::RegistrationOutcome LioOdometry::registerScan(
-  const CloudT & scan_base, const CloudT & local_map,
-  const Eigen::Isometry3d & prediction) const
+  const CloudT::ConstPtr & scan_base, const CloudT::ConstPtr & local_map,
+  const Eigen::Isometry3d & prediction)
 {
+  std::lock_guard<std::mutex> lock(registration_mutex_);
+  if (local_map != registration_target_) {
+    registration_target_ = local_map;
+    ++registration_target_revision_;
+  }
+  const auto result = registration_backend_->align(
+    scan_base, local_map, registration_target_revision_, prediction);
+  const auto quality = evaluateLioRegistration(result, prediction, registration_quality_limits_);
   RegistrationOutcome outcome;
-  outcome.odom_T_base = prediction;
-  const auto start = std::chrono::steady_clock::now();
-  if (registration_method_ == "voxel_surfel") {
-    const ::gole::slam_3d_core::VoxelSurfelRegistration registration(surfel_config_);
-    const auto result = registration.align(scan_base, local_map, prediction);
-    outcome.converged = result.converged;
-    outcome.accepted = result.accepted;
-    outcome.reason = result.reason;
-    outcome.odom_T_base = result.target_T_source;
-    outcome.fitness = std::isfinite(result.rmse) ? result.rmse * result.rmse :
-      std::numeric_limits<double>::infinity();
-    outcome.rmse_m = result.rmse;
-    outcome.p95_m = result.p95_abs_residual;
-    outcome.correspondence_ratio = result.correspondence_ratio;
-    outcome.observable_rank = result.observable_rank;
-    outcome.weak_rotation_axes = result.weak_rotation_axes;
-    outcome.weak_translation_axes = result.weak_translation_axes;
-    outcome.runtime_ms = result.total_time_ms;
-  } else {
-    pcl::GeneralizedIterativeClosestPoint<PointT, PointT> registration;
-    registration.setInputSource(scan_base.makeShared());
-    registration.setInputTarget(local_map.makeShared());
-    registration.setMaximumIterations(gicp_max_iterations_);
-    registration.setMaxCorrespondenceDistance(gicp_max_correspondence_m_);
-    registration.setTransformationEpsilon(1.0e-3);
-    registration.setEuclideanFitnessEpsilon(1.0e-3);
-    CloudT aligned;
-    registration.align(aligned, prediction.matrix().cast<float>());
-    outcome.converged = registration.hasConverged();
-    outcome.accepted = outcome.converged;
-    outcome.reason = outcome.converged ? "converged" : "not_converged";
-    outcome.odom_T_base.matrix() = registration.getFinalTransformation().cast<double>();
-    outcome.fitness = outcome.converged ?
-      registration.getFitnessScore(gicp_max_correspondence_m_) :
-      std::numeric_limits<double>::infinity();
-    outcome.rmse_m = std::sqrt(std::max(0.0, outcome.fitness));
-    outcome.runtime_ms = std::chrono::duration<double, std::milli>(
-      std::chrono::steady_clock::now() - start).count();
-  }
-  if (!outcome.accepted) {
-    return outcome;
-  }
-  if (!outcome.odom_T_base.matrix().allFinite() || !std::isfinite(outcome.fitness)) {
-    outcome.accepted = false;
-    outcome.reason = "invalid_result";
-    return outcome;
-  }
-  if (outcome.fitness > fitness_threshold_) {
-    outcome.accepted = false;
-    outcome.reason = "fitness";
-    return outcome;
-  }
-  const Eigen::Isometry3d correction = prediction.inverse() * outcome.odom_T_base;
-  const double correction_translation = correction.translation().norm();
-  const double correction_rotation_deg = rotationAngle(correction.linear()) *
-    57.295779513082320876;
-  if (!std::isfinite(correction_translation) || !std::isfinite(correction_rotation_deg) ||
-    correction_translation > max_correction_translation_m_)
-  {
-    outcome.accepted = false;
-    outcome.reason = "translation_correction";
-  } else if (correction_rotation_deg > max_correction_rotation_deg_) {
-    outcome.accepted = false;
-    outcome.reason = "rotation_correction";
-  }
+  outcome.accepted = quality.accepted;
+  outcome.converged = result.converged;
+  outcome.reason = quality.reason;
+  outcome.odom_T_base = result.target_T_source;
+  outcome.fitness = result.fitness;
+  outcome.rmse_m = result.rmse_m;
+  outcome.p95_m = result.surfel.p95_abs_residual;
+  outcome.correspondence_ratio = result.surfel.correspondence_ratio;
+  outcome.observable_rank = result.surfel.observable_rank;
+  outcome.weak_rotation_axes = result.surfel.weak_rotation_axes;
+  outcome.weak_translation_axes = result.surfel.weak_translation_axes;
+  outcome.runtime_ms = result.total_runtime_ms;
   return outcome;
 }
 
@@ -1647,9 +1876,19 @@ void LioOdometry::resetForTimeEpoch(const std::string & reason)
     rolling_submap_ = CloudT::Ptr(new CloudT);
   }
   have_lidar_reference_ = false;
+  lidar_only_pose_.setIdentity();
+  lidar_only_input_stamp_ns_ = -1;
+  lidar_only_pose_stamp_ns_ = -1;
   last_processed_cloud_stamp_ns_ = 0;
   latest_imu_stamp_ns_ = 0;
-  ++imu_reset_count_;
+  last_admitted_cloud_stamp_ns_ = -1;
+  last_imu_publish_snapshot_ns_ = -1;
+  if (cloud_processing_timer_) {
+    cloud_processing_timer_->cancel();
+  }
+  if (imu_enabled_) {
+    ++imu_reset_count_;
+  }
   ++state_revision_;
   ++publication_revision_;
   invalidateOlderPublications(publication_revision_);
@@ -1740,6 +1979,11 @@ void LioOdometry::publishOdometry(
         return;
       }
     }
+    if (imu_enabled_ &&
+      !LowComputeBudget::odometryDue(stamp_ns, last_published_odom_stamp_ns_))
+    {
+      return;
+    }
   }
   const auto message = makeOdometry(estimator, stamp);
   odom_pub_->publish(message);
@@ -1795,17 +2039,33 @@ void LioOdometry::publishDiagnostic(
   array.header.stamp = stamp;
   diagnostic_msgs::msg::DiagnosticStatus status;
   status.level = static_cast<std::uint8_t>(level);
-  status.name = get_fully_qualified_name() + std::string(": lidar_inertial_odometry");
-  status.hardware_id = "lidar_imu";
+  status.name = get_fully_qualified_name() +
+    std::string(imu_enabled_ ? ": lidar_inertial_odometry" : ": lidar_odometry");
+  status.hardware_id = imu_enabled_ ? "lidar_imu" : "lidar_only";
   status.message = state + ": " + reason;
   status.values.push_back(keyValue("state", state));
   status.values.push_back(keyValue("reason", reason));
-  status.values.push_back(keyValue("fusion_mode", "lidar_imu"));
+  status.values.push_back(keyValue("fusion_mode", imu_enabled_ ? "lidar_imu" : "lidar_only"));
+  status.values.push_back(keyValue("imu_enabled", imu_enabled_ ? "true" : "false"));
+  status.values.push_back(keyValue(
+    "imu_input_policy", imu_enabled_ ? "50ms_batch_preserve_queued_samples" : "disabled"));
+  status.values.push_back(keyValue("imu_bias_estimation_enabled",
+    imu_enabled_ && state_config_.imu_bias_estimation_enabled ? "true" : "false"));
+  status.values.push_back(keyValue("imu_gyroscope_bias_norm_radps",
+    std::to_string(live_estimator_.gyroscopeBias().norm())));
+  status.values.push_back(keyValue("imu_accelerometer_bias_norm_mps2",
+    std::to_string(live_estimator_.accelerometerBias().norm())));
+  status.values.push_back(keyValue("deskew_enabled", imu_enabled_ ? "true" : "false"));
+  status.values.push_back(keyValue("odom_publish_source", imu_enabled_ ? "imu" : "lidar"));
+  status.values.push_back(keyValue(
+    "scan_stamp_reference", imu_enabled_ ? "sampled_scan_end" : "header"));
   status.values.push_back(
     keyValue(
       "wheel_correction_enabled", wheel_correction_enabled_ ? "true" : "false"));
   status.values.push_back(keyValue("wheel_update_count", std::to_string(wheel_update_count_)));
   status.values.push_back(keyValue("registration_method", registration_method_));
+  status.values.push_back(keyValue(
+    "registration_backend_description", registration_backend_->runtimeDescription()));
   status.values.push_back(keyValue("scan_points", std::to_string(scan_points)));
   status.values.push_back(keyValue("local_submap_points", std::to_string(map_points)));
   status.values.push_back(keyValue("keyframes", std::to_string(keyframe_count)));
@@ -1816,6 +2076,29 @@ void LioOdometry::publishDiagnostic(
     keyValue(
       "rejected_registrations", std::to_string(rejected_registration_count_)));
   status.values.push_back(keyValue("dropped_clouds", std::to_string(dropped_cloud_count_)));
+  status.values.push_back(keyValue(
+    "compute_budget_skipped_clouds", std::to_string(compute_budget_skipped_clouds_)));
+  status.values.push_back(keyValue("cloud_samples_taken", std::to_string(cloud_samples_taken_)));
+  const auto append_cpu_counter = [&status](
+    const std::string & prefix, const ThreadCpuCounter & counter) {
+      status.values.push_back(keyValue(prefix + "_total_cpu_ms", std::to_string(counter.ms())));
+      status.values.push_back(keyValue(prefix + "_completed_count", std::to_string(counter.count())));
+      status.values.push_back(keyValue(
+        prefix + "_clock_failures", std::to_string(counter.clockFailures())));
+    };
+  append_cpu_counter("imu_callback", imu_callback_cpu_);
+  append_cpu_counter("cloud_take", cloud_take_cpu_);
+  append_cpu_counter("cloud_callback", cloud_callback_cpu_);
+  append_cpu_counter("cloud_process", cloud_process_cpu_);
+  status.values.push_back(keyValue(
+    "thread_cpu_scope", "completed_scopes_only;take_includes_cloud_callback;process_includes_registration"));
+  status.values.push_back(keyValue(
+    "cloud_input_policy", imu_enabled_ ? "latest_only_take_0.5hz" : "callback"));
+  status.values.push_back(keyValue(
+    "effective_cloud_subscription_depth", std::to_string(imu_enabled_ ? 1 : cloud_subscription_depth_)));
+  status.values.push_back(keyValue("compute_scan_max_hz", imu_enabled_ ? "0.5" : "unlimited"));
+  status.values.push_back(keyValue("compute_max_deskew_points", "1024"));
+  status.values.push_back(keyValue("compute_odom_max_hz", imu_enabled_ ? "2" : "scan_rate"));
   status.values.push_back(keyValue("imu_resets", std::to_string(imu_reset_count_)));
   status.values.push_back(
     keyValue(
@@ -1906,22 +2189,24 @@ bool LioOdometry::pointCloudTimeBounds(
   std::int64_t minimum = std::numeric_limits<std::int64_t>::max();
   std::int64_t maximum = std::numeric_limits<std::int64_t>::min();
   std::size_t valid_count = 0U;
-  for (std::uint32_t row = 0; row < message.height; ++row) {
-    const std::size_t row_offset = static_cast<std::size_t>(row) * message.row_step;
-    for (std::uint32_t column = 0; column < message.width; ++column) {
-      const std::size_t offset = row_offset + static_cast<std::size_t>(column) * message.point_step;
-      if (offset + message.point_step > message.data.size()) {
-        return false;
-      }
-      const std::int64_t stamp_ns = pointStampNs(
-        readNumericField(message.data.data() + offset, *field), mode, header_stamp_ns);
-      if (stamp_ns < 0) {
-        continue;
-      }
-      minimum = std::min(minimum, stamp_ns);
-      maximum = std::max(maximum, stamp_ns);
-      ++valid_count;
+  const std::size_t point_count = static_cast<std::size_t>(message.width) * message.height;
+  // Only these same indices can enter prepareAndDeskewCloud. Bounds refer to
+  // the retained scan, not discarded points; pose/cloud stamps remain exact.
+  const std::size_t stride = LowComputeBudget::pointStride(point_count);
+  for (std::size_t index = 0; index < point_count; index += stride) {
+    const std::size_t offset = (index / message.width) * message.row_step +
+      (index % message.width) * message.point_step;
+    if (offset + message.point_step > message.data.size()) {
+      return false;
     }
+    const std::int64_t stamp_ns = pointStampNs(
+      readNumericField(message.data.data() + offset, *field), mode, header_stamp_ns);
+    if (stamp_ns < 0) {
+      continue;
+    }
+    minimum = std::min(minimum, stamp_ns);
+    maximum = std::max(maximum, stamp_ns);
+    ++valid_count;
   }
   if (valid_count == 0U || maximum < minimum) {
     return false;

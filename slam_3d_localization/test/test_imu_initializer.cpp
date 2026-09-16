@@ -15,6 +15,7 @@ constexpr double kPi = 3.14159265358979323846;
 TEST(StationaryImuInitializer, AlignsMeasuredSpecificForceWithOdomUp)
 {
   ImuInitializationConfig config;
+  config.imu_bias_estimation_enabled = true;
   config.min_samples = 10;
   config.min_duration_s = 0.09;
   StationaryImuInitializer initializer(config);
@@ -39,6 +40,30 @@ TEST(StationaryImuInitializer, AlignsMeasuredSpecificForceWithOdomUp)
   EXPECT_TRUE(
     result.gyroscope_bias_radps.isApprox(
       Eigen::Vector3d(0.001, -0.002, 0.003), 1.0e-12));
+}
+
+TEST(StationaryImuInitializer, DefaultAlignsGravityWithoutEstimatingBias)
+{
+  ImuInitializationConfig config;
+  EXPECT_FALSE(config.imu_bias_estimation_enabled);
+  config.min_samples = 10;
+  config.min_duration_s = 0.09;
+  StationaryImuInitializer initializer(config);
+  const Eigen::Quaterniond expected_orientation(
+    Eigen::AngleAxisd(0.2, Eigen::Vector3d::UnitY()));
+  for (int index = 0; index < 10; ++index) {
+    ImuMeasurement sample;
+    sample.stamp_ns = 1000000000LL + index * 10000000LL;
+    sample.angular_velocity_radps = Eigen::Vector3d(0.001, -0.002, 0.003);
+    sample.linear_acceleration_mps2 = expected_orientation.conjugate() *
+      Eigen::Vector3d(0.0, 0.0, config.gravity_mps2 + 0.15);
+    ASSERT_TRUE(initializer.add(sample));
+  }
+  const auto result = initializer.evaluate();
+  ASSERT_TRUE(result.valid) << result.reason;
+  EXPECT_NEAR(result.odom_q_base.angularDistance(expected_orientation), 0.0, 1.0e-9);
+  EXPECT_EQ(result.gyroscope_bias_radps.norm(), 0.0);
+  EXPECT_EQ(result.accelerometer_bias_mps2.norm(), 0.0);
 }
 
 TEST(StationaryImuInitializer, RejectsMovingWindow)

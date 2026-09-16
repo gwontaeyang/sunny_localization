@@ -1,72 +1,35 @@
 slam_3d_localizer:
   ros__parameters:
-    # Replay-verified indoor XT32 profile. The launch file supplies map_path
-    # and use_sim_time. Live-production QoS has not yet been validated.
+    # Historical indoor replay overrides. Live-production QoS is not validated.
     map_path: ""
-    map_frame: map
-    odom_frame: odom
-    base_frame: base_link
     cloud_topic: /slam_3d/frontend/deskewed_points
     odom_topic: /unused/wheel_odom_disabled
-    initial_pose_topic: /initialpose
-    pose_topic: /localization_3d/odom
-    aligned_cloud_topic: /localization_3d/aligned_points
-    local_map_topic: /localization_3d/local_map
-    diagnostics_topic: /localization_3d/diagnostics
-
     registration_method: voxel_surfel
     input_scan_preprocessed: true
     map_already_voxelized: true
-    crop_box_enabled: false
     cloud_subscription_reliable: true
-    # Depth 128 is part of the exact replay contract, not a live-production
-    # queue recommendation. The upstream live publisher currently uses 10.
     cloud_subscription_depth: 128
     publish_tf: false
-    publish_local_map: false
     tf_timeout_s: 0.10
 
-    # The upstream indoor frontend owns deskew, range/z filtering, robot crop,
-    # and scan voxel filtering. These values preserve its tested lineage but
-    # are bypassed while input_scan_preprocessed is true.
+    # Upstream owns scan filtering; retain its original replay contract.
     scan_voxel_leaf_m: 0.18
     map_voxel_leaf_m: 0.22
-    local_map_radius_m: 15.0
-    min_range_m: 0.5
+    local_map_rebuild_distance_m: 0.0
     max_range_m: 40.0
     z_min_m: -4.0
     z_max_m: 6.0
-    crop_min_x: -0.7
-    crop_max_x: 0.7
-    crop_min_y: -0.55
-    crop_max_y: 0.55
-    crop_min_z: -0.8
-    crop_max_z: 0.9
-
     max_iterations: 40
     max_correspondence_m: 1.2
-    transformation_epsilon: 0.001
-    fitness_epsilon: 0.001
     fitness_threshold: 0.8
     min_registration_inlier_ratio: 0.25
     max_registration_inlier_rmse_m: 0.45
     max_correction_translation_m: 1.5
-    max_correction_rotation_deg: 30.0
     update_min_translation_m: 0.0
     update_min_rotation_deg: 0.0
 
-    # Sequence20 bag02/bag03 A/B changed only this runtime variable. With no
-    # declared wheel odometry, one accepted relative step is extrapolated and
-    # bounded before registration. Wheel odometry still takes precedence when
-    # a future profile explicitly declares and synchronizes it.
+    # Bounded constant-velocity prior; no wheel messages are expected.
     use_constant_velocity_prediction: true
-    constant_velocity_translation_limit_m: 0.30
-    constant_velocity_rotation_limit_deg: 10.0
-    constant_velocity_max_gap_s: 0.50
-    cloud_timestamp_reset_threshold_s: 1.0
-
-    # No messages are expected on odom_topic in this profile. These values
-    # remain explicit so accidental odometry publication is handled safely.
     odom_buffer_duration_s: 30.0
     odom_max_interpolation_gap_s: 0.50
     odom_max_nearest_age_s: 0.25
@@ -77,22 +40,13 @@ slam_3d_localizer:
     surfel_voxel_size_m: 0.6
     surfel_min_points_per_voxel: 5
     surfel_max_planarity_ratio: 0.25
-    surfel_min_tangent_variance: 0.0001
-    surfel_max_plane_distance_m: 0.35
     surfel_max_center_distance_m: 1.2
     surfel_min_correspondences: 150
     surfel_min_correspondence_ratio: 0.08
-    surfel_huber_delta_m: 0.10
     surfel_max_iterations: 12
     surfel_max_backtracking_steps: 5
-    surfel_backtracking_factor: 0.5
     surfel_rotation_convergence_rad: 0.0002
     surfel_translation_convergence_m: 0.0002
     surfel_relative_cost_convergence: 0.00001
-    surfel_max_rotation_step_rad: 0.20
-    surfel_max_translation_step_m: 0.50
-    surfel_rotation_scale_m_per_rad: 1.0
-    surfel_relative_eigen_threshold: 0.001
-    surfel_min_observable_rank: 3
     surfel_max_quality_rmse_m: 0.30
     surfel_max_quality_p95_m: 0.50

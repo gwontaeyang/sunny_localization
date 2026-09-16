@@ -4,7 +4,9 @@
 
 #include "slam_3d_localization/imu_initializer.hpp"
 #include "slam_3d_localization/lio_state_estimator.hpp"
-#include "slam_3d_core/voxel_surfel_registration.hpp"
+#include "slam_3d_localization/low_compute_budget.hpp"
+#include "slam_3d_localization/registration_backend.hpp"
+#include "slam_3d_localization/thread_cpu_counter.hpp"
 
 #include <Eigen/Geometry>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
@@ -85,10 +87,14 @@ private:
   void declareAndValidateParameters();
   void setupRosInterfaces();
   void imuCallback(const sensor_msgs::msg::Imu::SharedPtr message);
+  void takeImuBatch();
   void cloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr message);
+  void takeLatestCloud();
   void wheelCallback(const nav_msgs::msg::Odometry::SharedPtr message);
   void processPendingClouds();
   void processCloud(const PendingCloud & pending);
+  void processLidarOnlyCloud(
+    const PendingCloud & pending, const Eigen::Isometry3d & base_T_sensor);
   void resetForTimeEpoch(const std::string & reason);
   void advanceCorrectedAnchor(
     const LioStateEstimator & estimator_at_stamp, std::int64_t stamp_ns);
@@ -110,9 +116,9 @@ private:
     bool has_point_time,
     std::size_t & valid_input_points) const;
   RegistrationOutcome registerScan(
-    const CloudT & scan_base,
-    const CloudT & local_map,
-    const Eigen::Isometry3d & prediction) const;
+    const CloudT::ConstPtr & scan_base,
+    const CloudT::ConstPtr & local_map,
+    const Eigen::Isometry3d & prediction);
   CloudT::Ptr buildLocalSubmap(
     const CloudT::ConstPtr & submap_snapshot, const Eigen::Vector3d & center) const;
   bool updateKeyframeMapIfCurrent(
@@ -171,6 +177,8 @@ private:
   std::string point_time_mode_{"auto"};
   std::string registration_method_{"voxel_surfel"};
   bool publish_tf_{true};
+  // IMU remains active; bias learning is independently disabled by default.
+  bool imu_enabled_{true};
   bool wheel_correction_enabled_{false};
   bool require_point_time_{true};
   bool cloud_subscription_reliable_{false};
@@ -184,22 +192,23 @@ private:
   double imu_gap_position_std_m_{0.20};
   double imu_gap_velocity_std_mps_{0.75};
   double imu_gap_orientation_std_deg_{5.0};
-  double scan_voxel_leaf_m_{0.25};
-  double submap_voxel_leaf_m_{0.30};
-  double local_submap_radius_m_{25.0};
+  // Compute-first defaults: coarse clouds and a small rolling submap.
+  double scan_voxel_leaf_m_{0.8};
+  double submap_voxel_leaf_m_{0.8};
+  double local_submap_radius_m_{15.0};
   double min_range_m_{0.5};
-  double max_range_m_{80.0};
+  double max_range_m_{30.0};
   double z_min_m_{-5.0};
   double z_max_m_{8.0};
   bool crop_box_enabled_{true};
   Eigen::Vector3d crop_min_{-0.7, -0.55, -0.8};
   Eigen::Vector3d crop_max_{0.7, 0.55, 0.9};
-  int min_scan_points_{300};
-  int min_submap_points_{500};
-  int max_keyframes_{40};
-  double keyframe_translation_m_{0.50};
-  double keyframe_rotation_deg_{8.0};
-  int gicp_max_iterations_{40};
+  int min_scan_points_{100};
+  int min_submap_points_{100};
+  int max_keyframes_{10};
+  double keyframe_translation_m_{1.5};
+  double keyframe_rotation_deg_{15.0};
+  int gicp_max_iterations_{8};
   double gicp_max_correspondence_m_{2.0};
   double fitness_threshold_{1.0};
   double max_correction_translation_m_{1.5};
@@ -220,7 +229,14 @@ private:
   Eigen::Vector3d base_p_imu_{Eigen::Vector3d::Zero()};
   LioStateEstimator::Config state_config_;
   ImuInitializationConfig initializer_config_;
-  ::gole::slam_3d_core::VoxelSurfelRegistration::Config surfel_config_;
+  VoxelSurfelRegistration::Config surfel_config_;
+  std::unique_ptr<RegistrationBackend> registration_backend_;
+  RegistrationQualityLimits registration_quality_limits_;
+  // Registration owns stateful target caches; never acquire state_mutex_ while
+  // holding this mutex. IMU propagation does not access registration state.
+  std::mutex registration_mutex_;
+  CloudT::ConstPtr registration_target_;
+  std::uint64_t registration_target_revision_{0};
 
   mutable std::mutex state_mutex_;
   mutable std::mutex submap_mutex_;
@@ -233,9 +249,22 @@ private:
   std::deque<LidarKeyframe> keyframes_;
   CloudT::Ptr rolling_submap_{new CloudT};
   bool have_lidar_reference_{false};
+  Eigen::Isometry3d lidar_only_pose_{Eigen::Isometry3d::Identity()};
+  std::int64_t lidar_only_input_stamp_ns_{-1};
+  std::int64_t lidar_only_pose_stamp_ns_{-1};
   bool processing_cloud_{false};
   std::int64_t processing_cloud_end_stamp_ns_{0};
   std::int64_t latest_imu_stamp_ns_{0};
+  std::int64_t last_admitted_cloud_stamp_ns_{-1};
+  std::int64_t last_imu_publish_snapshot_ns_{-1};
+  std::size_t compute_budget_skipped_clouds_{0U};
+  std::size_t cloud_samples_taken_{0U};
+  ThreadCpuCounter imu_callback_cpu_;
+  ThreadCpuCounter cloud_take_cpu_;
+  ThreadCpuCounter cloud_callback_cpu_;
+  ThreadCpuCounter cloud_process_cpu_;
+  rclcpp::TimerBase::SharedPtr cloud_take_timer_;
+  rclcpp::TimerBase::SharedPtr imu_take_timer_;
   std::int64_t last_processed_cloud_stamp_ns_{0};
   std::size_t dropped_cloud_count_{0U};
   std::size_t rejected_registration_count_{0U};

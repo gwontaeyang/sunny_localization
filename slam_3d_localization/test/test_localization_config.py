@@ -1,4 +1,8 @@
+import importlib.util
+import json
 from pathlib import Path
+import subprocess
+import sys
 
 import yaml
 
@@ -6,10 +10,106 @@ import yaml
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_default_config_has_safe_registration_gates():
-    data = yaml.safe_load(
-        (PACKAGE_ROOT / "config" / "slam_3d_localization.yaml").read_text()
+def pipeline_parameters():
+    spec = importlib.util.spec_from_file_location(
+        "lio_profile", PACKAGE_ROOT / "launch" / "lio_profile.py"
     )
+    profile = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(profile)
+    return profile.get_lio_pipeline_parameters()
+
+
+def profile_contract(filename):
+    """Read the frozen effective contract plus the visible profile overrides.
+
+    test_minimal_config.cpp separately constructs the actual C++ nodes with
+    both files and compares every declared parameter, including omitted keys.
+    These checks retain the readable safety/interface assertions below.
+    """
+    legacy = yaml.safe_load(
+        (PACKAGE_ROOT / "test" / "fixtures" / "legacy_config" / filename).read_text()
+    )
+    current = yaml.safe_load((PACKAGE_ROOT / "config" / filename).read_text())
+    assert current.keys() <= legacy.keys()
+    if filename == "slam_3d_lio_gangnam.yaml":
+        for node, config in pipeline_parameters().items():
+            legacy[node]["ros__parameters"].update(config["ros__parameters"])
+        # One intentional change from the frozen profile: the omitted time
+        # mode now uses the actual C++ auto default, verified by the node test.
+        legacy["slam_3d_lio_odometry"]["ros__parameters"]["point_time_mode"] = "auto"
+    for node, config in current.items():
+        legacy[node]["ros__parameters"].update(config["ros__parameters"])
+    return legacy
+
+
+def test_profiles_keep_only_operational_and_nondefault_overrides():
+    limits = {
+        "slam_3d_localization.yaml": {"slam_3d_localizer": 1},
+        "slam_3d_localization_avs.yaml": {"slam_3d_localizer": 4},
+        "slam_3d_lio_gangnam.yaml": {
+            "slam_3d_lio_odometry": 1,
+        },
+        "slam_3d_localization_indoor_xt32_no_wheel_replay.yaml": {
+            "slam_3d_localizer": 44,
+        },
+    }
+    for filename, node_limits in limits.items():
+        current = yaml.safe_load((PACKAGE_ROOT / "config" / filename).read_text())
+        legacy = yaml.safe_load(
+            (PACKAGE_ROOT / "test" / "fixtures" / "legacy_config" / filename).read_text()
+        )
+        assert current.keys() == node_limits.keys()
+        for node, maximum in node_limits.items():
+            parameters = current[node]["ros__parameters"]
+            assert len(parameters) <= maximum
+            # This cleanup does not retune the visible overrides.
+            assert all(
+                value == legacy[node]["ros__parameters"][key]
+                for key, value in parameters.items()
+            )
+    lio = profile_contract("slam_3d_lio_gangnam.yaml")[
+        "slam_3d_lio_odometry"
+    ]["ros__parameters"]
+    assert lio["imu_enabled"] is True
+    assert lio["imu_bias_estimation_enabled"] is False
+    assert lio["wheel_correction_enabled"] is False
+
+
+def test_default_execution_configs_contain_only_nondefault_sensor_values_and_map():
+    lio = yaml.safe_load(
+        (PACKAGE_ROOT / "config" / "slam_3d_lio_gangnam.yaml").read_text()
+    )["slam_3d_lio_odometry"]["ros__parameters"]
+    assert set(lio) == {"imu_position_in_base_m"}
+    assert lio["imu_position_in_base_m"] == [0.0, 0.0, 1.20984]
+    generic = yaml.safe_load(
+        (PACKAGE_ROOT / "config" / "slam_3d_localization.yaml").read_text()
+    )["slam_3d_localizer"]["ros__parameters"]
+    assert generic == {"map_path": ""}
+
+
+def test_pipeline_export_uses_the_same_method_as_launch(tmp_path):
+    output = tmp_path / "pipeline.yaml"
+    subprocess.run(
+        [sys.executable, str(PACKAGE_ROOT / "launch" / "lio_profile.py"),
+         "--output", str(output)],
+        check=True,
+    )
+    exported = yaml.safe_load(output.read_text())
+    assert exported == pipeline_parameters()
+    assert exported == json.loads(output.read_text())
+    lio = exported["slam_3d_lio_odometry"]["ros__parameters"]
+    localizer = exported["slam_3d_localizer"]["ros__parameters"]
+    assert lio["odom_topic"] == localizer["odom_topic"]
+    assert lio["scan_odom_topic"] == localizer["registration_odom_topic"]
+    assert lio["deskewed_cloud_topic"] == localizer["cloud_topic"]
+    lio["odom_topic"] = "/changed_by_caller"
+    assert pipeline_parameters()["slam_3d_lio_odometry"][
+        "ros__parameters"
+    ]["odom_topic"] == "/localization_3d/lio/odom"
+
+
+def test_default_config_has_safe_registration_gates():
+    data = profile_contract("slam_3d_localization.yaml")
     params = data["slam_3d_localizer"]["ros__parameters"]
 
     assert params["map_path"] == ""
@@ -113,13 +213,7 @@ def test_default_config_has_safe_registration_gates():
 
 
 def test_indoor_xt32_no_wheel_replay_profile_matches_verified_contract():
-    data = yaml.safe_load(
-        (
-            PACKAGE_ROOT
-            / "config"
-            / "slam_3d_localization_indoor_xt32_no_wheel_replay.yaml"
-        ).read_text()
-    )
+    data = profile_contract("slam_3d_localization_indoor_xt32_no_wheel_replay.yaml")
     params = data["slam_3d_localizer"]["ros__parameters"]
 
     # Runtime-only values are supplied by launch, while every algorithm and
@@ -207,19 +301,19 @@ def test_indoor_xt32_no_wheel_replay_profile_matches_verified_contract():
     }
 
 
-def test_gangnam_lio_profile_uses_raw_imu_without_wheel_or_cv_fallback():
-    data = yaml.safe_load(
-        (PACKAGE_ROOT / "config" / "slam_3d_lio_gangnam.yaml").read_text()
-    )
+def test_gangnam_profile_defaults_to_raw_imu_without_bias_learning_or_wheel():
+    data = profile_contract("slam_3d_lio_gangnam.yaml")
     lio = data["slam_3d_lio_odometry"]["ros__parameters"]
     localizer = data["slam_3d_localizer"]["ros__parameters"]
 
     assert lio["cloud_topic"] == "/hesai/center/lidar_points"
+    assert lio["imu_enabled"] is True
+    assert lio["imu_bias_estimation_enabled"] is False
     assert lio["imu_topic"] == "/imu/data"
     assert lio["scan_odom_topic"] == "/localization_3d/lio/scan_odom"
     assert lio["imu_frame"] == "cv7_link"
     assert lio["point_time_field"] == "timestamp"
-    assert lio["point_time_mode"] == "absolute_seconds"
+    assert lio["point_time_mode"] == "auto"
     assert lio["imu_to_base_rpy_deg"] == [0.0, 0.0, 0.0]
     assert lio["imu_position_in_base_m"] == [0.0, 0.0, 1.20984]
     assert lio["wheel_correction_enabled"] is False
@@ -253,6 +347,14 @@ def test_lio_launch_starts_only_lio_and_prior_map_localization():
     assert "odom_estimation" not in launch_text
     assert "robot_localization" not in launch_text
     assert "IncludeLaunchDescription" not in launch_text
+    assert 'profile.get_lio_pipeline_parameters()' in launch_text
+    for node in ("slam_3d_lio_odometry", "slam_3d_localizer"):
+        # C++ tests verify the effective precedence on actual nodes; this check
+        # connects their shared default source to the public launch wiring.
+        start = launch_text.index(f'pipeline["{node}"]["ros__parameters"]')
+        params_file = launch_text.index("params_file,", start)
+        runtime = launch_text.index('"use_sim_time": use_sim_time', params_file)
+        assert start < params_file < runtime
 
 
 def test_launch_defaults_to_classified_rgb_map_and_does_not_start_hardware():
@@ -266,7 +368,7 @@ def test_launch_defaults_to_classified_rgb_map_and_does_not_start_hardware():
     assert "hesai" not in launch_text.lower()
 
 
-def test_node_uses_two_threads_and_a_dedicated_odom_callback_group():
+def test_node_uses_one_executor_thread_and_preserves_the_odom_callback_group():
     node_text = (
         PACKAGE_ROOT / "src" / "slam_3d_localizer_node.cpp"
     ).read_text()
@@ -280,20 +382,22 @@ def test_node_uses_two_threads_and_a_dedicated_odom_callback_group():
         PACKAGE_ROOT / "src" / "slam_3d_localizer.cpp"
     ).read_text()
 
-    assert "rclcpp::executors::MultiThreadedExecutor" in node_text
-    assert "rclcpp::ExecutorOptions(), 2" in node_text
+    assert "rclcpp::executors::StaticSingleThreadedExecutor" in node_text
+    assert "use_clock_thread(false)" in node_text
+    assert "MultiThreadedExecutor" not in node_text
     assert "odom_callback_group_" in header
     assert "CallbackGroupType::MutuallyExclusive" in implementation
     assert (
         "odom_subscription_options.callback_group = odom_callback_group_;"
         in implementation
     )
+    assert "std::chrono::milliseconds(20)" in implementation
+    assert "pending_cloud_timer_->cancel();" in implementation
+    assert "pending_cloud_timer_->reset();" in implementation
 
 
 def test_avs_profile_uses_robot_topics_and_classified_map():
-    data = yaml.safe_load(
-        (PACKAGE_ROOT / "config" / "slam_3d_localization_avs.yaml").read_text()
-    )
+    data = profile_contract("slam_3d_localization_avs.yaml")
     params = data["slam_3d_localizer"]["ros__parameters"]
 
     assert params["map_path"].endswith(

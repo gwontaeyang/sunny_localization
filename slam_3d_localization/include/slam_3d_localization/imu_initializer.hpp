@@ -15,6 +15,8 @@ namespace gole::slam_3d_localization
 
 struct ImuInitializationConfig
 {
+  // Keep gravity alignment/stationarity checks, but trust raw IMU by default.
+  bool imu_bias_estimation_enabled{false};
   std::size_t min_samples{100};
   double min_duration_s{0.5};
   double min_acceleration_norm_mps2{8.5};

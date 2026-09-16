@@ -87,6 +87,7 @@ void LioStateEstimator::reset()
   gyroscope_bias_.setZero();
   accelerometer_bias_.setZero();
   covariance_.setIdentity();
+  enforceFixedImuBias();
   last_measurement_ = ImuMeasurement{};
 }
 
@@ -107,8 +108,10 @@ bool LioStateEstimator::initialize(
   position_ = initial_position_odom_m;
   velocity_.setZero();
   orientation_ = odom_q_body.normalized();
-  gyroscope_bias_ = gyroscope_bias_radps;
-  accelerometer_bias_ = accelerometer_bias_mps2;
+  if (config_.imu_bias_estimation_enabled) {
+    gyroscope_bias_ = gyroscope_bias_radps;
+    accelerometer_bias_ = accelerometer_bias_mps2;
+  }
   covariance_.setZero();
   covariance_.diagonal().segment<3>(0).setConstant(
     config_.initial_position_std_m * config_.initial_position_std_m);
@@ -116,12 +119,15 @@ bool LioStateEstimator::initialize(
     config_.initial_velocity_std_mps * config_.initial_velocity_std_mps);
   covariance_.diagonal().segment<3>(6).setConstant(
     config_.initial_orientation_std_rad * config_.initial_orientation_std_rad);
-  covariance_.diagonal().segment<3>(9).setConstant(
-    config_.initial_gyroscope_bias_std_radps *
-    config_.initial_gyroscope_bias_std_radps);
-  covariance_.diagonal().segment<3>(12).setConstant(
-    config_.initial_accelerometer_bias_std_mps2 *
-    config_.initial_accelerometer_bias_std_mps2);
+  if (config_.imu_bias_estimation_enabled) {
+    covariance_.diagonal().segment<3>(9).setConstant(
+      config_.initial_gyroscope_bias_std_radps *
+      config_.initial_gyroscope_bias_std_radps);
+    covariance_.diagonal().segment<3>(12).setConstant(
+      config_.initial_accelerometer_bias_std_mps2 *
+      config_.initial_accelerometer_bias_std_mps2);
+  }
+  enforceFixedImuBias();
   stamp_ns_ = measurement.stamp_ns;
   last_measurement_ = measurement;
   initialized_ = true;
@@ -166,35 +172,8 @@ ImuPropagationStatus LioStateEstimator::propagate(const ImuMeasurement & measure
   const Eigen::Quaterniond candidate_orientation =
     (orientation_ * deltaQuaternion(angular_velocity * dt)).normalized();
 
-  Covariance dynamics = Covariance::Zero();
-  dynamics.block<3, 3>(0, 3).setIdentity();
-  dynamics.block<3, 3>(3, 6) = -odom_R_base_mid * skew(specific_force);
-  dynamics.block<3, 3>(3, 12) = -odom_R_base_mid;
-  dynamics.block<3, 3>(6, 6) = -skew(angular_velocity);
-  dynamics.block<3, 3>(6, 9) = -Eigen::Matrix3d::Identity();
-  const Covariance transition = Covariance::Identity() + dynamics * dt;
-
-  Eigen::Matrix<double, kStateDimension, 12> noise_jacobian =
-    Eigen::Matrix<double, kStateDimension, 12>::Zero();
-  noise_jacobian.block<3, 3>(3, 0) = odom_R_base_mid;
-  noise_jacobian.block<3, 3>(6, 3).setIdentity();
-  noise_jacobian.block<3, 3>(9, 6).setIdentity();
-  noise_jacobian.block<3, 3>(12, 9).setIdentity();
-  Eigen::Matrix<double, 12, 12> noise = Eigen::Matrix<double, 12, 12>::Zero();
-  noise.diagonal().segment<3>(0).setConstant(
-    config_.accelerometer_noise_mps2_sqrt_hz *
-    config_.accelerometer_noise_mps2_sqrt_hz);
-  noise.diagonal().segment<3>(3).setConstant(
-    config_.gyroscope_noise_radps_sqrt_hz * config_.gyroscope_noise_radps_sqrt_hz);
-  noise.diagonal().segment<3>(6).setConstant(
-    config_.gyroscope_bias_noise_radps2_sqrt_hz *
-    config_.gyroscope_bias_noise_radps2_sqrt_hz);
-  noise.diagonal().segment<3>(9).setConstant(
-    config_.accelerometer_bias_noise_mps3_sqrt_hz *
-    config_.accelerometer_bias_noise_mps3_sqrt_hz);
-  Covariance candidate_covariance = transition * covariance_ * transition.transpose() +
-    noise_jacobian * noise * noise_jacobian.transpose() * dt;
-  candidate_covariance = 0.5 * (candidate_covariance + candidate_covariance.transpose());
+  const Covariance candidate_covariance = predictCovariance(
+    odom_R_base_mid, specific_force, angular_velocity, dt);
   if (!candidate_position.allFinite() || !candidate_velocity.allFinite() ||
     !candidate_orientation.coeffs().allFinite() || candidate_orientation.norm() < 1.0e-9 ||
     !candidate_covariance.allFinite() ||
@@ -207,10 +186,84 @@ ImuPropagationStatus LioStateEstimator::propagate(const ImuMeasurement & measure
   velocity_ = candidate_velocity;
   orientation_ = candidate_orientation;
   covariance_ = candidate_covariance;
+  enforceFixedImuBias();
 
   stamp_ns_ = measurement.stamp_ns;
   last_measurement_ = measurement;
   return ImuPropagationStatus::kApplied;
+}
+
+LioStateEstimator::Covariance LioStateEstimator::predictCovariance(
+  const Eigen::Matrix3d & odom_R_base_mid,
+  const Eigen::Vector3d & specific_force,
+  const Eigen::Vector3d & angular_velocity, const double dt) const
+{
+  if (!config_.imu_bias_estimation_enabled) {
+    // Fixed bias rows/columns are identically zero. Apply the exact sparse
+    // nine-state transition in blocks, retaining every position/velocity/
+    // orientation cross-covariance; this is not a diagonal approximation.
+    using Matrix9 = Eigen::Matrix<double, 9, 9>;
+    const Eigen::Matrix3d force_coupling = -odom_R_base_mid * skew(specific_force) * dt;
+    const Eigen::Matrix3d rotation_transition =
+      Eigen::Matrix3d::Identity() - skew(angular_velocity) * dt;
+    const auto prior = covariance_.topLeftCorner<9, 9>();
+    Matrix9 left;
+    left.topRows<3>() = prior.topRows<3>() + dt * prior.middleRows<3>(3);
+    left.middleRows<3>(3) = prior.middleRows<3>(3) + force_coupling * prior.bottomRows<3>();
+    left.bottomRows<3>() = rotation_transition * prior.bottomRows<3>();
+    Matrix9 active;
+    active.leftCols<3>() = left.leftCols<3>() + dt * left.middleCols<3>(3);
+    active.middleCols<3>(3) =
+      left.middleCols<3>(3) + left.rightCols<3>() * force_coupling.transpose();
+    active.rightCols<3>() = left.rightCols<3>() * rotation_transition.transpose();
+    // Isotropic accelerometer noise is unchanged by the orthonormal rotation.
+    active.diagonal().segment<3>(3).array() +=
+      config_.accelerometer_noise_mps2_sqrt_hz *
+      config_.accelerometer_noise_mps2_sqrt_hz * dt;
+    active.diagonal().segment<3>(6).array() +=
+      config_.gyroscope_noise_radps_sqrt_hz *
+      config_.gyroscope_noise_radps_sqrt_hz * dt;
+    Covariance predicted = Covariance::Zero();
+    predicted.topLeftCorner<9, 9>() = 0.5 * (active + active.transpose());
+    return predicted;
+  }
+
+  // Optional bias learning keeps the existing full error-state formulation.
+  Covariance dynamics = Covariance::Zero();
+  dynamics.block<3, 3>(0, 3).setIdentity();
+  dynamics.block<3, 3>(3, 6) = -odom_R_base_mid * skew(specific_force);
+  dynamics.block<3, 3>(6, 6) = -skew(angular_velocity);
+  if (config_.imu_bias_estimation_enabled) {
+    dynamics.block<3, 3>(3, 12) = -odom_R_base_mid;
+    dynamics.block<3, 3>(6, 9) = -Eigen::Matrix3d::Identity();
+  }
+  const Covariance transition = Covariance::Identity() + dynamics * dt;
+
+  Eigen::Matrix<double, kStateDimension, 12> noise_jacobian =
+    Eigen::Matrix<double, kStateDimension, 12>::Zero();
+  noise_jacobian.block<3, 3>(3, 0) = odom_R_base_mid;
+  noise_jacobian.block<3, 3>(6, 3).setIdentity();
+  if (config_.imu_bias_estimation_enabled) {
+    noise_jacobian.block<3, 3>(9, 6).setIdentity();
+    noise_jacobian.block<3, 3>(12, 9).setIdentity();
+  }
+  Eigen::Matrix<double, 12, 12> noise = Eigen::Matrix<double, 12, 12>::Zero();
+  noise.diagonal().segment<3>(0).setConstant(
+    config_.accelerometer_noise_mps2_sqrt_hz *
+    config_.accelerometer_noise_mps2_sqrt_hz);
+  noise.diagonal().segment<3>(3).setConstant(
+    config_.gyroscope_noise_radps_sqrt_hz * config_.gyroscope_noise_radps_sqrt_hz);
+  if (config_.imu_bias_estimation_enabled) {
+    noise.diagonal().segment<3>(6).setConstant(
+      config_.gyroscope_bias_noise_radps2_sqrt_hz *
+      config_.gyroscope_bias_noise_radps2_sqrt_hz);
+    noise.diagonal().segment<3>(9).setConstant(
+      config_.accelerometer_bias_noise_mps3_sqrt_hz *
+      config_.accelerometer_bias_noise_mps3_sqrt_hz);
+  }
+  Covariance candidate_covariance = transition * covariance_ * transition.transpose() +
+    noise_jacobian * noise * noise_jacobian.transpose() * dt;
+  return 0.5 * (candidate_covariance + candidate_covariance.transpose());
 }
 
 ImuPropagationStatus LioStateEstimator::propagateTo(
@@ -246,6 +299,7 @@ bool LioStateEstimator::resynchronizeAfterGap(
     return false;
   }
   covariance_ = candidate_covariance;
+  enforceFixedImuBias();
   stamp_ns_ = measurement.stamp_ns;
   last_measurement_ = measurement;
   return true;
@@ -342,6 +396,7 @@ bool LioStateEstimator::correctBodyPose(
     Eigen::Matrix3d::Identity() - 0.5 * skew(error_state.segment<3>(6));
   covariance_ = reset_jacobian * covariance_ * reset_jacobian.transpose();
   covariance_ = 0.5 * (covariance_ + covariance_.transpose());
+  enforceFixedImuBias();
   if (!position_.allFinite() || !velocity_.allFinite() ||
     !orientation_.coeffs().allFinite() || orientation_.norm() < 1.0e-9 ||
     !gyroscope_bias_.allFinite() || !accelerometer_bias_.allFinite() ||
@@ -401,6 +456,7 @@ bool LioStateEstimator::correctBodyForwardVelocity(
     Eigen::Matrix3d::Identity() - 0.5 * skew(error_state.segment<3>(6));
   covariance_ = reset_jacobian * covariance_ * reset_jacobian.transpose();
   covariance_ = 0.5 * (covariance_ + covariance_.transpose());
+  enforceFixedImuBias();
   if (!position_.allFinite() || !velocity_.allFinite() ||
     !orientation_.coeffs().allFinite() || orientation_.norm() < 1.0e-9 ||
     !gyroscope_bias_.allFinite() || !accelerometer_bias_.allFinite() ||
@@ -468,8 +524,24 @@ void LioStateEstimator::applyErrorState(const Vector15 & error_state)
   position_ += error_state.segment<3>(0);
   velocity_ += error_state.segment<3>(3);
   orientation_ = (orientation_ * deltaQuaternion(error_state.segment<3>(6))).normalized();
-  gyroscope_bias_ += error_state.segment<3>(9);
-  accelerometer_bias_ += error_state.segment<3>(12);
+  if (config_.imu_bias_estimation_enabled) {
+    gyroscope_bias_ += error_state.segment<3>(9);
+    accelerometer_bias_ += error_state.segment<3>(12);
+  }
+}
+
+void LioStateEstimator::enforceFixedImuBias()
+{
+  if (config_.imu_bias_estimation_enabled) {
+    return;
+  }
+  // Keep the existing 15-state API while making the six bias states fixed
+  // constants. Zero cross-covariance prevents any measurement update from
+  // implicitly reintroducing IMU bias estimation.
+  gyroscope_bias_.setZero();
+  accelerometer_bias_.setZero();
+  covariance_.bottomRows<6>().setZero();
+  covariance_.rightCols<6>().setZero();
 }
 
 }  // namespace gole::slam_3d_localization

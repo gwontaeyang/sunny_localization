@@ -53,6 +53,10 @@ public:
     double initial_orientation_std_rad{0.05};
     double initial_accelerometer_bias_std_mps2{0.10};
     double initial_gyroscope_bias_std_radps{0.02};
+    // Trust the incoming IMU by default: integrate its measurements without
+    // estimating or subtracting gyro/accelerometer bias. Pose and velocity
+    // still receive LiDAR (and optional wheel) corrections.
+    bool imu_bias_estimation_enabled{false};
   };
 
   LioStateEstimator();
@@ -113,6 +117,11 @@ private:
   static Eigen::Quaterniond deltaQuaternion(const Eigen::Vector3d & rotation_vector);
   static Eigen::Vector3d rotationVector(const Eigen::Quaterniond & quaternion);
   void applyErrorState(const Vector15 & error_state);
+  void enforceFixedImuBias();
+  Covariance predictCovariance(
+    const Eigen::Matrix3d & odom_R_base_mid,
+    const Eigen::Vector3d & specific_force,
+    const Eigen::Vector3d & angular_velocity, double dt) const;
 
   Config config_;
   bool initialized_{false};
